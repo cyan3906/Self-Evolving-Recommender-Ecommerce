@@ -1,0 +1,10 @@
+# 数据库文件
+*.db
+*.dmdb
+*.sqlite
+*.sqlite3
+db/
+database/
+
+# 环境变量文件
+.env
