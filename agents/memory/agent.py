@@ -37,30 +37,28 @@ SCOPE_TTL = {
 }
 
 BRAND_ALIASES = {
-    "Apple": ("Apple", "鑻规灉", "苹果"),
-    "Huawei": ("Huawei", "鍗庝负", "华为"),
-    "Xiaomi": ("Xiaomi", "灏忕背", "小米"),
-    "Samsung": ("Samsung", "涓夋槦", "三星"),
+    "Apple": ("Apple", "苹果"),
+    "Huawei": ("Huawei", "华为"),
+    "Xiaomi": ("Xiaomi", "小米"),
+    "Samsung": ("Samsung", "三星"),
     "OPPO": ("OPPO",),
-    "Sony": ("Sony", "绱㈠凹", "索尼"),
-    "Lenovo": ("Lenovo", "鑱旀兂", "联想"),
-    "Dell": ("Dell", "鎴村皵", "戴尔"),
+    "Sony": ("Sony", "索尼"),
+    "Lenovo": ("Lenovo", "联想"),
+    "Dell": ("Dell", "戴尔"),
     "Nike": ("Nike",),
     "Adidas": ("Adidas",),
 }
 
-# These are the categories in tools/product_data.py.  Correctly encoded aliases
-# are accepted too, so a caller is not coupled to the fixture's legacy encoding.
 CATEGORY_ALIASES = {
-    "鎵嬫満": ("鎵嬫満", "手机"),
-    "绗旇鏈數鑴?": ("绗旇鏈數鑴?", "笔记本电脑"),
-    "骞虫澘鐢佃剳": ("骞虫澘鐢佃剳", "平板电脑"),
-    "鏅鸿兘鎵嬭〃": ("鏅鸿兘鎵嬭〃", "智能手表"),
-    "鑰虫満": ("鑰虫満", "耳机"),
-    "琛ｆ湇": ("琛ｆ湇", "衣服"),
-    "闉嬪瓙": ("闉嬪瓙", "鞋子"),
-    "鍜栧暋鏈?": ("鍜栧暋鏈?", "咖啡机"),
-    "鐢佃": ("鐢佃", "电视"),
+    "手机": ("手机",),
+    "笔记本电脑": ("笔记本电脑",),
+    "平板电脑": ("平板电脑",),
+    "智能手表": ("智能手表",),
+    "耳机": ("耳机",),
+    "衣服": ("衣服",),
+    "鞋子": ("鞋子",),
+    "咖啡机": ("咖啡机",),
+    "电视": ("电视",),
 }
 
 
@@ -85,25 +83,26 @@ class LLMQueryOperationExtractor:
         if not isinstance(payload, list):
             raise ValueError("LLM query extractor must return a JSON array")
 
+        operations: list[MemoryOperation] = []
         try:
-            return [
-                MemoryOperation.model_validate(
-                    {
-                        **item,
-                        "user_id": user_id,
-                        "source": "llm_query",
-                        "source_event_id": event_id,
-                    }
-                )
-                for item in payload
-                if isinstance(item, dict)
-            ] if all(isinstance(item, dict) for item in payload) else self._invalid_item()
-        except ValidationError as error:
+            for item in payload:
+                if not isinstance(item, dict):
+                    raise ValueError("LLM query extractor array items must be objects")
+                candidate = {
+                    **item,
+                    "user_id": user_id,
+                    "source": "llm_query",
+                    "source_event_id": event_id,
+                }
+                if isinstance(candidate.get("key"), str):
+                    candidate["key"] = _normalized_key(candidate["key"])
+                operation = MemoryOperation.model_validate(candidate)
+                if operation.operation is not MemoryOperationType.UPSERT:
+                    raise ValueError("LLM query extractor only accepts upsert operations")
+                operations.append(operation)
+        except (ValidationError, ValueError) as error:
             raise ValueError("LLM query extractor returned an invalid operation batch") from error
-
-    @staticmethod
-    def _invalid_item() -> list[MemoryOperation]:
-        raise ValueError("LLM query extractor array items must be objects")
+        return operations
 
     @staticmethod
     def _prompt(query: str) -> str:
@@ -307,7 +306,10 @@ class MemoryAgent:
         for candidate in candidates:
             try:
                 operation = MemoryOperation.model_validate(candidate)
+                operation = operation.model_copy(update={"key": _normalized_key(operation.key)})
                 self._require_v1_user(operation.user_id)
+                if operation.operation is not MemoryOperationType.UPSERT:
+                    raise ValueError("query operations must be upsert operations")
                 operations.append(operation)
             except (ValidationError, ValueError) as error:
                 self.last_warnings.append(f"memory operation rejected: {error}")
@@ -394,7 +396,7 @@ def _contains_alias(query: str, aliases: tuple[str, ...]) -> bool:
 
 def _negative_terms(query: str) -> list[str]:
     terms: list[str] = []
-    for marker in ("涓嶈", "涓嶈€冭檻", "鎺掗櫎", "不要", "不考虑", "排除"):
+    for marker in ("不要", "不考虑", "排除"):
         for match in re.finditer(re.escape(marker) + r"\s*([^\s,，。！？!?]+)", query):
             terms.append(match.group(1))
     return terms
@@ -405,10 +407,10 @@ def _is_negative(aliases: tuple[str, ...], negative_terms: list[str]) -> bool:
 
 
 def _extract_budget(query: str) -> tuple[int | None, int | None] | None:
-    range_match = re.search(r"(\d+)\s*鍒.{0,2}?(\d+)", query)
+    range_match = re.search(r"(\d+)\s*(?:到|至)\s*(\d+)", query)
     if range_match:
         return int(range_match.group(1)), int(range_match.group(2))
-    max_match = re.search(r"(?:棰勭畻\s*|涓嶈秴杩.\s*)(\d+)|(?<!\d)(\d+)\s*浠ュ唴", query)
+    max_match = re.search(r"(?:预算|不超过)\s*(\d+)|(?<!\d)(\d+)\s*以内", query)
     if max_match:
         value = next(group for group in max_match.groups() if group is not None)
         return None, int(value)

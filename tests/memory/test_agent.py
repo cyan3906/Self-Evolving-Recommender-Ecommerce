@@ -143,26 +143,71 @@ def test_valid_llm_operation_is_applied_with_trusted_identity(store):
     assert llm_record.source == "llm_query"
 
 
+def test_llm_operation_keys_are_normalized_and_share_one_store_identity(store):
+    generated = '[{"operation":"upsert","memory_type":"brand_preference","scope":"recent","key":" Brand:Huawei ","value":{"brand":"Huawei"},"confidence":0.8,"reason":"query"}]'
+    agent = MemoryAgent(store, query_extractor=LLMQueryOperationExtractor(lambda _: generated))
+
+    agent.record_query(event("query-1", BehaviorEventType.SEARCH, {"query": "手机"}))
+    agent.record_query(event("query-2", BehaviorEventType.SEARCH, {"query": "手机"}))
+
+    brands = [record for record in store.get_active("user_001") if record.memory_type is MemoryType.BRAND_PREFERENCE]
+    assert [(record.key, record.evidence_count) for record in brands] == [("brand:huawei", 2)]
+
+
+def test_llm_soft_delete_rejects_entire_batch_and_preserves_deterministic_writes(store):
+    generated = (
+        '[{"operation":"upsert","memory_type":"feature_preference","scope":"recent",'
+        '"key":"feature:camera","value":{"feature":"camera"},"confidence":0.8,"reason":"query"},'
+        '{"operation":"soft_delete","memory_type":"brand_preference","scope":"recent",'
+        '"key":"brand:huawei","value":{},"confidence":0.8,"reason":"delete"}]'
+    )
+    agent = MemoryAgent(store, query_extractor=LLMQueryOperationExtractor(lambda _: generated))
+
+    records = agent.record_query(event("query-1", BehaviorEventType.SEARCH, {"query": "Huawei"}))
+
+    assert [(record.memory_type, record.key) for record in records] == [(MemoryType.BRAND_PREFERENCE, "brand:huawei")]
+    assert any("LLM" in warning for warning in agent.last_warnings)
+
+
 def test_deterministic_query_parser_extracts_huawei_phone_and_budget_without_llm(store):
     operations = extract_deterministic_query_operations(
         "user_001",
-        "鍗庝负鎵嬫満棰勭畻5000浠ュ唴",
+        "华为手机预算5000以内",
         "query-1",
         datetime(2026, 8, 6, tzinfo=timezone.utc),
     )
 
     assert {(operation.memory_type, operation.key, operation.value.get("value")) for operation in operations} == {
         (MemoryType.BRAND_PREFERENCE, "brand:huawei", "Huawei"),
-        (MemoryType.CATEGORY_PREFERENCE, "category:鎵嬫満", "鎵嬫満"),
+        (MemoryType.CATEGORY_PREFERENCE, "category:手机", "手机"),
         (MemoryType.PRICE_RANGE, "price:max:5000", 5000),
     }
     assert all(operation.operation is MemoryOperationType.UPSERT for operation in operations)
 
 
+@pytest.mark.parametrize("query", ["预算5000", "5000以内", "不超过5000"])
+def test_deterministic_query_parser_supports_exact_max_budget_forms(query):
+    operations = extract_deterministic_query_operations(
+        "user_001", query, "query-1", datetime(2026, 8, 6, tzinfo=timezone.utc)
+    )
+
+    assert [(operation.key, operation.value["max_price"]) for operation in operations] == [("price:max:5000", 5000)]
+
+
+def test_deterministic_query_parser_supports_exact_budget_range():
+    operations = extract_deterministic_query_operations(
+        "user_001", "3000到5000", "query-1", datetime(2026, 8, 6, tzinfo=timezone.utc)
+    )
+
+    assert [(operation.key, operation.value) for operation in operations] == [
+        ("price:3000-5000", {"min_price": 3000, "max_price": 5000})
+    ]
+
+
 def test_deterministic_query_parser_extracts_negative_preference(store):
     agent = MemoryAgent(store)
 
-    records = agent.record_query(event("query-1", BehaviorEventType.SEARCH, {"query": "涓嶈Huawei"}))
+    records = agent.record_query(event("query-1", BehaviorEventType.SEARCH, {"query": "不要Huawei"}))
 
     assert [(record.memory_type, record.key) for record in records] == [
         (MemoryType.NEGATIVE_PREFERENCE, "negative:brand:huawei")
