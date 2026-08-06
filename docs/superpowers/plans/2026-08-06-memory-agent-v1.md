@@ -209,6 +209,8 @@ class BehaviorEvent(StrictModel):
 
 
 class WeightedMemory(StrictModel):
+    memory_type: MemoryType
+    scope: MemoryScope
     key: str
     value: dict[str, Any]
     confidence: float = Field(ge=0.0, le=1.0)
@@ -504,7 +506,7 @@ LEVEL_WEIGHT = {
 }
 ```
 
-Set each `WeightedMemory.weight` to `LEVEL_WEIGHT[scope] * confidence`. For search, create ephemeral L0 `WeightedMemory` values from deterministic query parsing; use source IDs prefixed with `query:` so they cannot be confused with persisted rows. Select persisted memories by category/brand/feature overlap with the normalized query plus all active daily intents and negative preferences. Cap each level at five records, sorted by `(weight, confidence)` descending. Set `memory_version` to the maximum active record version, or zero for no records.
+Set each `WeightedMemory.weight` to `LEVEL_WEIGHT[scope] * confidence`. For search, create ephemeral L0 `WeightedMemory` values from deterministic query parsing, preserving each operation's `memory_type` and using `MemoryScope.DAILY`; use source IDs prefixed with `query:` so they cannot be confused with persisted rows. Select persisted memories by category/brand/feature overlap with the normalized query plus all active daily intents and negative preferences. Cap each level at five records, sorted by `(weight, confidence)` descending. Set `memory_version` to the maximum active record version, or zero for no records.
 
 For homepage, include daily intent, recent preference, long-term preference, negative preference, and durable purchased-product suppression; leave `current_constraints` empty.
 
