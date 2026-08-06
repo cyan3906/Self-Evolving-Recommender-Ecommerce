@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Iterable
+
 from agents.memory.agent import V1_USER_ID, extract_deterministic_query_operations
 from agents.memory.models import (
     MemoryContext,
@@ -20,6 +22,12 @@ LEVEL_WEIGHT = {
 }
 
 _LEVEL_CAP = 5
+_PREFERENCE_TYPES = {
+    MemoryType.CATEGORY_PREFERENCE,
+    MemoryType.BRAND_PREFERENCE,
+    MemoryType.PRICE_RANGE,
+    MemoryType.FEATURE_PREFERENCE,
+}
 
 
 class MemoryProjector:
@@ -37,7 +45,13 @@ class MemoryProjector:
         self._require_v1_user(user_id)
         records = self._active_records(user_id)
         constraints = self._query_constraints(user_id, query)
-        return self._context(user_id, "search", records, constraints)
+        return self._context(
+            user_id,
+            "search",
+            records,
+            constraints,
+            self._relevance_terms(query, constraints),
+        )
 
     def _active_records(self, user_id: str) -> list[MemoryRecord]:
         self._store.expire(user_id, utc_now())
@@ -49,28 +63,37 @@ class MemoryProjector:
         scene: str,
         records: list[MemoryRecord],
         current_constraints: list[WeightedMemory] | None = None,
+        relevance_terms: set[str] | None = None,
     ) -> MemoryContext:
         daily_intents = self._sorted(
             record for record in records
             if record.scope is MemoryScope.DAILY
-            and record.memory_type is not MemoryType.NEGATIVE_PREFERENCE
+            and record.memory_type is MemoryType.SHOPPING_INTENT
         )
         recent_preferences = self._sorted(
-            record for record in records
-            if record.scope is MemoryScope.RECENT
-            and record.memory_type is not MemoryType.NEGATIVE_PREFERENCE
+            (
+                record for record in records
+                if record.scope is MemoryScope.RECENT
+                and record.memory_type in _PREFERENCE_TYPES
+            ),
+            relevance_terms,
         )
         long_term_preferences = self._sorted(
-            record for record in records
-            if record.scope is MemoryScope.LONG_TERM
-            and record.memory_type is not MemoryType.NEGATIVE_PREFERENCE
+            (
+                record for record in records
+                if record.scope is MemoryScope.LONG_TERM
+                and record.memory_type in _PREFERENCE_TYPES
+            ),
+            relevance_terms,
         )
         negative_preferences = self._sorted(
             record for record in records
-            if record.memory_type in {
-                MemoryType.NEGATIVE_PREFERENCE,
-                MemoryType.PURCHASED_PRODUCT,
-            }
+            if record.memory_type is MemoryType.NEGATIVE_PREFERENCE
+            or (
+                scene == "homepage"
+                and record.memory_type is MemoryType.PURCHASED_PRODUCT
+                and record.scope is MemoryScope.DURABLE
+            )
         )
         return MemoryContext(
             user_id=user_id,
@@ -84,10 +107,22 @@ class MemoryProjector:
         )
 
     @staticmethod
-    def _sorted(records: object) -> list[WeightedMemory]:
-        memories = [MemoryProjector._weighted(record) for record in records]
-        memories.sort(key=lambda memory: (memory.weight, memory.confidence), reverse=True)
-        return memories[:_LEVEL_CAP]
+    def _sorted(
+        records: Iterable[MemoryRecord],
+        relevance_terms: set[str] | None = None,
+    ) -> list[WeightedMemory]:
+        weighted_records = [
+            (MemoryProjector._is_relevant(record, relevance_terms), MemoryProjector._weighted(record))
+            for record in records
+        ]
+        weighted_records.sort(
+            key=lambda item: (
+                not item[0],
+                -item[1].weight,
+                -item[1].confidence,
+            )
+        )
+        return [memory for _, memory in weighted_records[:_LEVEL_CAP]]
 
     @staticmethod
     def _weighted(record: MemoryRecord) -> WeightedMemory:
@@ -122,6 +157,37 @@ class MemoryProjector:
         return constraints[:_LEVEL_CAP]
 
     @staticmethod
+    def _relevance_terms(query: str, constraints: Iterable[WeightedMemory]) -> set[str]:
+        terms = {_normalize(query)}
+        for constraint in constraints:
+            terms.add(_normalize(constraint.key))
+            terms.update(_value_terms(constraint.value))
+        return {term for term in terms if term}
+
+    @staticmethod
+    def _is_relevant(record: MemoryRecord, relevance_terms: set[str] | None) -> bool:
+        if relevance_terms is None:
+            return False
+        record_terms = {_normalize(record.key), *_value_terms(record.value)}
+        return any(
+            record_term in query_term or query_term in record_term
+            for record_term in record_terms if record_term
+            for query_term in relevance_terms
+        )
+
+    @staticmethod
     def _require_v1_user(user_id: str) -> None:
         if user_id != V1_USER_ID:
             raise ValueError(f"MemoryProjector only supports user_id {V1_USER_ID!r}")
+
+
+def _normalize(value: object) -> str:
+    return str(value).casefold().strip()
+
+
+def _value_terms(value: object) -> set[str]:
+    if isinstance(value, dict):
+        return {term for item in value.values() for term in _value_terms(item)}
+    if isinstance(value, (list, tuple, set)):
+        return {term for item in value for term in _value_terms(item)}
+    return {_normalize(value)}
