@@ -1,4 +1,7 @@
+import sqlite3
 from datetime import datetime, timedelta, timezone
+
+import pytest
 
 from agents.memory.models import MemoryScope, MemoryType
 
@@ -45,6 +48,25 @@ def test_apply_creates_audit_event_with_before_and_after_snapshots(store):
     assert events[0]["before_json"] is None
     assert events[0]["after_json"]["id"] == record.id
     assert events[0]["source_event_id"] == "evt-1"
+
+
+def test_apply_rolls_back_memory_when_audit_insert_fails(store):
+    with sqlite3.connect(store._database_path) as connection:
+        connection.execute(
+            """
+            CREATE TRIGGER abort_memory_event_insert
+            BEFORE INSERT ON memory_events
+            BEGIN
+                SELECT RAISE(ABORT, 'forced audit failure');
+            END;
+            """
+        )
+
+    with pytest.raises(sqlite3.IntegrityError, match="forced audit failure"):
+        store.apply(make_brand_operation(confidence=0.4, event_id="evt-1"))
+
+    assert store.get_active("user_001") == []
+    assert store.list_events("user_001") == []
 
 
 def test_soft_delete_hides_record_and_appends_audit_event(store):
