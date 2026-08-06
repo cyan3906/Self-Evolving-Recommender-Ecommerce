@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Iterable
+from enum import IntEnum
 from typing import Any
 
 from agents.memory.models import (
@@ -12,6 +13,12 @@ from agents.memory.models import (
     RerankWeights,
     WeightedMemory,
 )
+
+
+class _CurrentConstraintTier(IntEnum):
+    CONTRADICTORY = 0
+    NEUTRAL = 1
+    COMPLIANT = 2
 
 
 class MemoryReranker:
@@ -31,13 +38,13 @@ class MemoryReranker:
         if request.memory_context.is_empty:
             return self._unchanged(request, retrieval_scores)
 
-        ranked = [
+        scored = [
             self._score_candidate(product, original_rank, retrieval_scores[original_rank - 1], request)
             for original_rank, product in enumerate(request.candidates, start=1)
         ]
-        ranked.sort(key=lambda item: (-item.final_score, item.original_rank))
+        scored.sort(key=lambda item: (-item[0], -item[1].final_score, item[1].original_rank))
         explained: list[RankedProduct] = []
-        for rank, item in enumerate(ranked, start=1):
+        for rank, (_, item) in enumerate(scored, start=1):
             reasons = item.memory_reasons
             if rank != item.original_rank and not reasons:
                 reasons = [
@@ -52,15 +59,17 @@ class MemoryReranker:
         original_rank: int,
         retrieval_score: float,
         request: RerankRequest,
-    ) -> RankedProduct:
+    ) -> tuple[_CurrentConstraintTier, RankedProduct]:
         base_score = self._weights.retrieval * retrieval_score
         try:
             _validate_product(product)
-            memory_score, reasons = self._memory_score(product, request)
         except Exception as exc:
             memory_score = 0.0
             reasons = [f"Malformed candidate ignored for memory scoring: {exc}"]
-        return RankedProduct(
+            tier = _CurrentConstraintTier.NEUTRAL
+        else:
+            memory_score, reasons, tier = self._memory_score(product, request)
+        return tier, RankedProduct(
             product=product,
             original_rank=original_rank,
             final_rank=original_rank,
@@ -74,16 +83,11 @@ class MemoryReranker:
         self,
         product: dict[str, Any],
         request: RerankRequest,
-    ) -> tuple[float, list[str]]:
+    ) -> tuple[float, list[str], _CurrentConstraintTier]:
         context = request.memory_context
-        score = 0.0
-        reasons: list[str] = []
-
-        contribution, level_reasons = self._score_memories(
-            product, context.current_constraints, explicit=True
+        score, reasons, current_tier = self._score_current_constraints(
+            product, context.current_constraints
         )
-        score += contribution
-        reasons.extend(level_reasons)
 
         for memories in (
             context.daily_intents,
@@ -101,43 +105,70 @@ class MemoryReranker:
                 reasons.append(
                     f"Negative {memory.memory_type.value} matched ({_memory_label(memory)}): -{penalty:.3f}"
                 )
-        return score, reasons
+        return score, reasons, current_tier
+
+    def _score_current_constraints(
+        self,
+        product: dict[str, Any],
+        memories: Iterable[WeightedMemory],
+    ) -> tuple[float, list[str], _CurrentConstraintTier]:
+        score = 0.0
+        reasons: list[str] = []
+        matched_constraint = False
+        violated_constraint = False
+        explicit_types = {
+            MemoryType.BRAND_PREFERENCE,
+            MemoryType.CATEGORY_PREFERENCE,
+            MemoryType.PRICE_RANGE,
+        }
+        for memory in memories:
+            if memory.memory_type not in explicit_types:
+                continue
+            match_detail = _match_detail(product, memory)
+            if match_detail is None:
+                continue
+            matches, detail = match_detail
+            if matches:
+                matched_constraint = True
+                reward = _level_weight(memory.scope, self._weights) * memory.weight
+                score += reward
+                reasons.append(
+                    f"Current constraint match: {memory.memory_type.value} ({detail}): +{reward:.3f}"
+                )
+            else:
+                violated_constraint = True
+                penalty = self._weights.negative_penalty * memory.weight
+                score -= penalty
+                reasons.append(
+                    f"Current constraint violation: {memory.memory_type.value} contradicts ({detail}): -{penalty:.3f}"
+                )
+        if violated_constraint:
+            tier = _CurrentConstraintTier.CONTRADICTORY
+        elif matched_constraint:
+            tier = _CurrentConstraintTier.COMPLIANT
+        else:
+            tier = _CurrentConstraintTier.NEUTRAL
+        return score, reasons, tier
 
     def _score_memories(
         self,
         product: dict[str, Any],
         memories: Iterable[WeightedMemory],
-        *,
-        explicit: bool = False,
     ) -> tuple[float, list[str]]:
         score = 0.0
         reasons: list[str] = []
         for memory in memories:
             level_weight = _level_weight(memory.scope, self._weights)
-            if memory.memory_type is MemoryType.PRICE_RANGE:
-                price_result = _price_result(product, memory)
-                if price_result is None:
-                    continue
-                matches, detail = price_result
-            else:
-                matches = _matches(product, memory)
-                detail = _memory_label(memory)
+            match_detail = _match_detail(product, memory)
+            if match_detail is None:
+                continue
+            matches, detail = match_detail
 
             if matches:
                 reward = level_weight * memory.weight
                 score += reward
                 reasons.append(
                     f"Matched {memory.memory_type.value} ({detail}): +{reward:.3f}"
-                )
-            elif explicit and memory.memory_type in {
-                MemoryType.BRAND_PREFERENCE,
-                MemoryType.CATEGORY_PREFERENCE,
-                MemoryType.PRICE_RANGE,
-            }:
-                penalty = self._weights.negative_penalty * memory.weight
-                score -= penalty
-                reasons.append(
-                    f"Contradicts current {memory.memory_type.value} ({detail}): -{penalty:.3f}"
                 )
         return score, reasons
 
@@ -190,6 +221,14 @@ def _matches(product: dict[str, Any], memory: WeightedMemory) -> bool:
         result = _price_result(product, memory)
         return bool(result and result[0])
     return False
+
+
+def _match_detail(
+    product: dict[str, Any], memory: WeightedMemory
+) -> tuple[bool, str] | None:
+    if memory.memory_type is MemoryType.PRICE_RANGE:
+        return _price_result(product, memory)
+    return _matches(product, memory), _memory_label(memory)
 
 
 def _negative_match(product: dict[str, Any], memory: WeightedMemory) -> bool:
