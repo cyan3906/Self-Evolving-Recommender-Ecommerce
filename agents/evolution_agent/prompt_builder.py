@@ -874,7 +874,6 @@ class PromptBuilder:
 
 if __name__ == "__main__":
 
-    
     config = PromptBuilderConfig(
         project_root=PROJECT_ROOT,
         skill_directories=[
