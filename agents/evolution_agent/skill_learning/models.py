@@ -6,15 +6,17 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
+from writer import hybrid_retrieval
+from store import  save_hybird_retrieval
 
 # ============================================================
 # 配置
 # ============================================================
 
-PROJECT_ROOT = Path(__file__).resolve().parent
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 
-DATABASE_DIR = PROJECT_ROOT / "data"
-DATABASE_PATH = DATABASE_DIR / "skills.db"
+DATABASE_DIR = PROJECT_ROOT / "db"
+DATABASE_PATH = DATABASE_DIR / "sqlite/skills.db"
 
 
 # ============================================================
@@ -551,6 +553,19 @@ if __name__ == "__main__":
 
     file_name = "hybrid-retrieval.md"
 
+    res = save_hybird_retrieval(
+        file_name="SKILL2",
+        potential_products=["商品1", "商品2", "商品3"],
+        es_top_k=10,
+        milvus_top_k=10,
+        final_top_k=10,
+        rrf_k=10,
+        es_weight=0.7,
+        milvus_weight=0.3,
+    )
+    
+    print(111,res)
+    
     if not skill_db.exists(file_name):
 
         skill_id = skill_db.create_skill(
@@ -570,16 +585,16 @@ if __name__ == "__main__":
                 "SKILL.md"
             ),
 
-            content="""
-            Elasticsearch weight = 0.7
-            Milvus weight = 0.3
-            """,
+            content=content,
         )
 
         print(
             f"Skill 创建成功，ID={skill_id}"
         )
 
+    print("点我继续")
+    # input()
+    
     # --------------------------------------------------------
     # 模拟调用成功
     # --------------------------------------------------------

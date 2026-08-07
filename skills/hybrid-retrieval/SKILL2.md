@@ -1,12 +1,10 @@
 
-
-hybrid_retrieval = """
     Hybrid Retrieval Strategy
 
     Skill 基本信息
 
     skill_name: hybrid-retrieval
-    skill_path: skills/hybrid-retrieval/{file_name}.md
+    skill_path: skills/hybrid-retrieval/SKILL2.md
     description: >
     商品检索场景下的混合检索策略。
     必须同时调用 Elasticsearch 与 Milvus，
@@ -26,13 +24,11 @@ hybrid_retrieval = """
 
     检索参数
 
-    potential_products: {potential_products}
-    es_top_k: {es_top_k}
-    milvus_top_k: {milvus_top_k}
-    final_top_k: {final_top_k}
-    rrf_k: {rrf_k}
-    es_weight: {es_weight}
-    milvus_weight: {milvus_weight}
-
-"""
+    potential_products: ['商品1', '商品2', '商品3']
+    es_top_k: 10
+    milvus_top_k: 10
+    final_top_k: 10
+    rrf_k: 10
+    es_weight: 0.7
+    milvus_weight: 0.3
 

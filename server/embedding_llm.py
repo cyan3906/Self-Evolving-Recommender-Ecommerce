@@ -34,7 +34,6 @@ def generate_embedding(
 
 
 
-
 if __name__ == "__main__":
     
     print(generate_response("你好", "你好"))

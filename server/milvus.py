@@ -6,19 +6,17 @@ from typing import Any
 import structlog
 from pymilvus import MilvusClient
 import sys
-from config import es, Settings
-from config import milvus as client
-
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.append(str(PROJECT_ROOT))
-
+    
+from config import es, Settings
+from config import milvus as client
 from server.embedding_llm import generate_embedding
 
 settings = Settings()
 logger = structlog.get_logger()
-
 
 def create_db() -> None:
     """
@@ -391,7 +389,7 @@ def milvus_run(
 
 
 if __name__ == "__main__":
-    from make_product import products
+    from tools.product_data import products
 
     # 自动创建 Collection 并存储商品
     run_result = milvus_run(products)
