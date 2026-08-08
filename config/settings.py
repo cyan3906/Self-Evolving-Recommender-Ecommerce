@@ -4,7 +4,11 @@ import logging
 import structlog
 import os
 import sys
+from pathlib import Path
 
+BASE_DIR = Path(__file__).parent.parent
+env_path = BASE_DIR / ".env"
+# print(env_path)
 
 def setup_logging(log_level: str = "INFO"):
     log_level_name = log_level.upper()
@@ -95,7 +99,9 @@ class Settings(BaseSettings):
     agent_timeout_inventory: float = 5.0
 
     # model_config = {"env_file": ".env", "env_prefix": "ECOM_"}
-    model_config = {"env_file": ".env"}
+    # __file__ = 当前这个 .py 文件的路径
+    
+    model_config = {"env_file": env_path}
     
     # Logger
     setup_logging(log_level="DEBUG")

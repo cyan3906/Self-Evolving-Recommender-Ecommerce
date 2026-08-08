@@ -2,9 +2,19 @@ from __future__ import annotations
 
 from collections import defaultdict
 from typing import Any
-from server import search_full_text,search_embedding
+import sys
+from pathlib import Path
 
-def search_es(query: str, top_k: int = 10) -> list[dict[str, Any]]:
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.append(str(PROJECT_ROOT))
+
+from server.es import search_full_text
+from server.milvus import search_embedding
+from langchain.tools import tool
+
+# @tool(description="使用 Elasticsearch 检索商品")
+def es_search(query: str, top_k: int = 10) -> list[dict[str, Any]]:
     """
     模拟 Elasticsearch 关键词检索。
 
@@ -17,12 +27,13 @@ def search_es(query: str, top_k: int = 10) -> list[dict[str, Any]]:
         top_k = top_k
     )
 
-    print(res)
+    # print(res)
     # input("点我继续")
     
     return res
 
-def search_milvus(query: str, top_k: int = 10) -> list[dict[str, Any]]:
+# @tool(description="使用 Milvus 检索商品")
+def milvus_search(query: str, top_k: int = 10) -> list[dict[str, Any]]:
     """
     模拟 Milvus 语义向量检索。
 
@@ -42,7 +53,7 @@ def search_milvus(query: str, top_k: int = 10) -> list[dict[str, Any]]:
         top_k = top_k
     )
 
-    print(res)
+    # print(res)
     # input("点我继续")
     
     return res
@@ -171,6 +182,8 @@ def rrf_fusion(
 
     return fused_results
 
+
+@tool(description="使用 Elasticsearch 和 Milvus 检索商品")
 def hybrid_search(
     query: str,
     *,
@@ -188,8 +201,18 @@ def hybrid_search(
     3. 使用 RRF 融合；
     4. 返回最终排序结果。
     """
-    es_results = search_es(query=query, top_k=es_top_k)
-    milvus_results = search_milvus(query=query, top_k=milvus_top_k)
+    
+    print(11111)
+    print(es_top_k)
+    print(milvus_top_k)
+    print(final_top_k)
+    print(es_weight)
+    print(milvus_weight)
+    print(11111)
+    
+    # input("点我继续")
+    es_results = es_search(query=query, top_k=es_top_k)
+    milvus_results = milvus_search(query=query, top_k=milvus_top_k)
 
     return rrf_fusion(
         result_sets={
@@ -203,7 +226,6 @@ def hybrid_search(
         },
         top_k=final_top_k,
     )
-
 
 def print_results(results: list[dict[str, Any]]) -> None:
     """打印融合结果。"""

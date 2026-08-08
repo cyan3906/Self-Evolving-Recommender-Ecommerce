@@ -50,4 +50,6 @@ class ChatGPT:
         return response.choices[0].message.content
     
 
-    
+class DeepSeek:
+    pass
+
