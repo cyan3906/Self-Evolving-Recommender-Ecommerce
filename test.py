@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Annotated
+import operator
 from typing_extensions import NotRequired
 
 from langchain.agents import AgentState, create_agent
@@ -29,6 +30,7 @@ class ThreeLayerAgentState(AgentState):
     layer_1: NotRequired[dict[str, Any]]
     layer_2: NotRequired[dict[str, Any]]
     layer_3: NotRequired[dict[str, Any]]
+    
 
 
 # ============================================================
@@ -300,36 +302,36 @@ agent = create_agent(
     state_schema=ThreeLayerAgentState,
 
     system_prompt="""
-你是一个商品推荐 Agent。
+        你是一个商品推荐 Agent。
 
-对于用户的商品推荐请求，必须严格按照下面顺序执行：
+        对于用户的商品推荐请求，必须严格按照下面顺序执行：
 
-第一步：
-调用 analyze_user_input
-解析用户需求。
+        第一步：
+        调用 analyze_user_input
+        解析用户需求。
 
-第二步：
-等待 analyze_user_input 完成之后，
-调用 retrieve_products。
+        第二步：
+        等待 analyze_user_input 完成之后，
+        调用 retrieve_products。
 
-第三步：
-等待 retrieve_products 完成之后，
-调用 rank_products。
+        第三步：
+        等待 retrieve_products 完成之后，
+        调用 rank_products。
 
-禁止跳过任何步骤。
-禁止同时调用多个工具。
+        禁止跳过任何步骤。
+        禁止同时调用多个工具。
 
-执行顺序必须严格为：
+        执行顺序必须严格为：
 
-analyze_user_input
-    ↓
-retrieve_products
-    ↓
-rank_products
+        analyze_user_input
+            ↓
+        retrieve_products
+            ↓
+        rank_products
 
-三个工具全部完成后，
-根据最终结果回答用户。
-""",
+        三个工具全部完成后，
+        根据最终结果回答用户。
+        """,
 )
 
 

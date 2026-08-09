@@ -33,6 +33,6 @@ hybrid_retrieval = """
     rrf_k: {rrf_k}
     es_weight: {es_weight}
     milvus_weight: {milvus_weight}
-
+    is_execute: true
 """
 

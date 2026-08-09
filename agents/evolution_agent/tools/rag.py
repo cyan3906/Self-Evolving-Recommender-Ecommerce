@@ -11,7 +11,13 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from server.es import search_full_text
 from server.milvus import search_embedding
-from langchain.tools import tool
+from typing import Any
+from langchain.tools import tool, ToolRuntime
+from langchain.messages import ToolMessage
+from langgraph.types import Command
+
+# from langchain.agents import LayerAgentState
+from agent_init import LayerAgentState
 
 # @tool(description="使用 Elasticsearch 检索商品")
 def es_search(query: str, top_k: int = 10) -> list[dict[str, Any]]:
@@ -182,7 +188,6 @@ def rrf_fusion(
 
     return fused_results
 
-
 @tool(description="使用 Elasticsearch 和 Milvus 检索商品")
 def hybrid_search(
     query: str,
@@ -193,28 +198,59 @@ def hybrid_search(
     rrf_k: int = 60,
     es_weight: float = 1.0,
     milvus_weight: float = 1.0,
-) -> list[dict[str, Any]]:
+    is_execute: bool = False,
+    # 第一个 None：没有额外 Context
+    # 第二个：当前 AgentState
+    runtime: ToolRuntime[None, LayerAgentState],
+
+) -> Command:
     """
     完整的混合检索入口：
+
     1. 获取 ES 结果；
     2. 获取 Milvus 结果；
     3. 使用 RRF 融合；
-    4. 返回最终排序结果。
+    4. 将完整检索结构写入 AgentState；
+    5. 给模型返回简化后的 ToolMessage。
     """
+
+    import time
+    time.sleep(1)
     
-    print(11111)
+    if not is_execute:
+        return Command()
+
+    print("11111")
     print(es_top_k)
     print(milvus_top_k)
     print(final_top_k)
     print(es_weight)
     print(milvus_weight)
-    print(11111)
-    
-    # input("点我继续")
-    es_results = es_search(query=query, top_k=es_top_k)
-    milvus_results = milvus_search(query=query, top_k=milvus_top_k)
+    print("11111")
 
-    return rrf_fusion(
+    # =============================
+    # 1. Elasticsearch
+    # =============================
+
+    es_results = es_search(
+        query=query,
+        top_k=es_top_k,
+    )
+
+    # =============================
+    # 2. Milvus
+    # =============================
+
+    milvus_results = milvus_search(
+        query=query,
+        top_k=milvus_top_k,
+    )
+
+    # =============================
+    # 3. RRF
+    # =============================
+
+    final_results = rrf_fusion(
         result_sets={
             "es": es_results,
             "milvus": milvus_results,
@@ -226,6 +262,119 @@ def hybrid_search(
         },
         top_k=final_top_k,
     )
+
+    # =============================
+    # 4. 构造结构化 State
+    # =============================
+
+    retrieval_state = {
+        "query": query,
+
+        "parameters": {
+            "es_top_k": es_top_k,
+            "milvus_top_k": milvus_top_k,
+            "final_top_k": final_top_k,
+            "rrf_k": rrf_k,
+            "es_weight": es_weight,
+            "milvus_weight": milvus_weight,
+        },
+
+        "es_results": es_results,
+
+        "milvus_results": milvus_results,
+
+        "final_results": final_results,
+    }
+
+    # =============================
+    # 5. 更新 AgentState
+    # =============================
+
+    # return Command(
+    #     update={
+    #         "layer_1": [
+    #             {
+    #                 "tool": "hybrid_search",
+    #                 "query": query,
+    #                 "es_results": es_results,
+    #                 "milvus_results": milvus_results,
+    #                 "final_results": final_results,
+    #             }
+    #         ],
+
+    #         "messages": [
+    #             ToolMessage(
+    #                 content="混合检索完成",
+    #                 tool_call_id=runtime.tool_call_id,
+    #             )
+    #         ],
+    #     }
+    # )
+
+    return Command(
+        update={
+            # 真正的数据保存在 State
+            "layer_1": [retrieval_state],
+            
+            # ToolMessage 给模型看
+            "messages": [
+                ToolMessage(
+                    content=(
+                        f"已经调用了hybrid_search工具，下次请不要重复调用。下次请不要重复调用。下次请不要重复调用。混合检索完成，共获得 "
+                        f"{len(final_results)} 条融合结果。"
+                        f"完整结果已经保存到 "
+                        f"AgentState.retrieval_layer。"
+                    ),
+                    tool_call_id=runtime.tool_call_id,
+                )
+            ],
+        }
+    )
+    
+# @tool(description="使用 Elasticsearch 和 Milvus 检索商品")
+# def hybrid_search(
+#     query: str,
+#     *,
+#     es_top_k: int = 10,
+#     milvus_top_k: int = 10,
+#     final_top_k: int = 10,
+#     rrf_k: int = 60,
+#     es_weight: float = 1.0,
+#     milvus_weight: float = 1.0,
+#     # runtime: ToolRuntime[None, LayerAgentState],
+# ) -> list[dict[str, Any]]:
+#     """
+#     完整的混合检索入口：
+#     1. 获取 ES 结果；
+#     2. 获取 Milvus 结果；
+#     3. 使用 RRF 融合；
+#     4. 返回最终排序结果。
+#     """
+    
+#     print(11111)
+#     print(es_top_k)
+#     print(milvus_top_k)
+#     print(final_top_k)
+#     print(es_weight)
+#     print(milvus_weight)
+#     print(11111)
+    
+#     # input("点我继续")
+#     es_results = es_search(query=query, top_k=es_top_k)
+#     milvus_results = milvus_search(query=query, top_k=milvus_top_k)
+
+#     return rrf_fusion(
+#         result_sets={
+#             "es": es_results,
+#             "milvus": milvus_results,
+#         },
+#         k=rrf_k,
+#         source_weights={
+#             "es": es_weight,
+#             "milvus": milvus_weight,
+#         },
+#         top_k=final_top_k,
+#     )
 
 def print_results(results: list[dict[str, Any]]) -> None:
     """打印融合结果。"""

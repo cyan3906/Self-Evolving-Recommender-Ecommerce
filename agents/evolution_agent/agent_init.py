@@ -23,10 +23,11 @@ import json
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Annotated
+import operator
 from uuid import uuid4
 
-from langchain.agents import create_agent
+from langchain.agents import create_agent,AgentState
 from langchain.agents.middleware import (
     AgentMiddleware,
     ModelCallLimitMiddleware,
@@ -38,7 +39,12 @@ from langchain.agents.middleware import (
 from langchain_core.tools import BaseTool
 from langchain_openai import ChatOpenAI
 from langgraph.checkpoint.memory import InMemorySaver
+from typing_extensions import NotRequired
 
+from langchain_core.globals import set_debug
+
+# set_debug(True)
+set_debug(False)
 
 # ---------------------------------------------------------------------------
 # 项目路径与项目配置
@@ -148,7 +154,6 @@ class AgentRuntimeContext:
     values: dict[str, Any] = field(default_factory=dict)
 
 
-
 class HybridSearchSkillMiddleware(AgentMiddleware):
     """
     hybrid_search 策略参数注入中间件。
@@ -182,6 +187,7 @@ class HybridSearchSkillMiddleware(AgentMiddleware):
         "es_top_k": "es_top_k",
         "milvus_top_k": "milvus_top_k",
         "final_top_k": "final_top_k",
+        "is_execute": "is_execute",
     }
     
     # 只负责从 Prompt 中确定性抽取，不让 LLM 再解析一次。
@@ -499,6 +505,23 @@ class HybridSearchSkillMiddleware(AgentMiddleware):
         return await handler(request)
 
 
+class LayerAgentState(AgentState):
+    layer_1: Annotated[
+        list[dict[str, Any]],
+        operator.add
+    ]
+    
+    layer_2: Annotated[
+        list[dict[str, Any]],
+        operator.add
+    ]
+
+    layer_3: Annotated[
+        list[dict[str, Any]],
+        operator.add
+    ]
+
+
 class LangChainAgent:
     """
     基于 LangChain create_agent 的 Agent 封装。
@@ -602,6 +625,7 @@ class LangChainAgent:
             "checkpointer": self.checkpointer,
             "context_schema": AgentRuntimeContext,
             "name": "project_agent",
+            "state_schema": LayerAgentState, # 自己去定义 state_schema
         }
 
         # 静态 system prompt 直接传给 create_agent。
@@ -1004,13 +1028,15 @@ if __name__ == "__main__":
     conversation_id = project_agent.new_thread_id()
 
     first = project_agent.invoke(
-        "查询商品 1001 的价格。",
+        "查询华为手机。",
         thread_id=conversation_id,
         runtime_context={
             "user_id": "user-001",
         },
     )
 
+    print(first)
+    
     print("第一轮回答：", first.content)
     print("第一轮是否完成：", first.completed)
     print("第一轮模型调用次数：", first.model_calls)
@@ -1018,16 +1044,16 @@ if __name__ == "__main__":
     print("第一轮 Token：", first.usage.to_dict())
 
     # 使用相同 thread_id，LangGraph 会读取上一轮历史消息。
-    second = project_agent.invoke(
-        "刚才那个商品多少钱？",
-        thread_id=conversation_id,
-        runtime_context={
-            "user_id": "user-001",
-        },
-    )
+    # second = project_agent.invoke(
+    #     "刚才那个商品多少钱？",
+    #     thread_id=conversation_id,
+    #     runtime_context={
+    #         "user_id": "user-001",
+    #     },
+    # )
 
-    print("第二轮回答：", second.content)
-    print("第二轮结果：", second.to_dict())
+    # print("第二轮回答：", second.content)
+    # print("第二轮结果：", second.to_dict())
 
-    json.dump(second.to_dict(), open("answer.json", "w"), ensure_ascii=False, indent=2)
+    # json.dump(second.to_dict(), open("answer.json", "w"), ensure_ascii=False, indent=2)
 

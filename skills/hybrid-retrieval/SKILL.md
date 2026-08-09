@@ -30,3 +30,4 @@ final_top_k: 10
 rrf_k: 60
 es_weight: 1.0
 milvus_weight: 1.0
+is_execute: true
