@@ -32,7 +32,7 @@ from langchain_core.messages import (
     BaseMessage,
     HumanMessage,
     ToolMessage,
-    message_to_dict,
+    message_to_dict, # 方面处理对象 变成 字符串
 )
 
 
