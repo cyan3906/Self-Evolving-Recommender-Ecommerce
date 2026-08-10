@@ -58,6 +58,7 @@ class HomepageRecommendationAgent:
                 daily_intent_count=len(context.daily_intents),
                 recent_preference_count=len(context.recent_preferences),
                 long_term_preference_count=len(context.long_term_preferences),
+                cadence_signal_count=len(context.cadence_signals),
                 negative_preference_count=len(context.negative_preferences),
                 changed_position_count=sum(
                     item.original_rank != item.final_rank for item in ranked

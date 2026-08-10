@@ -52,6 +52,10 @@ _Avoid_: Prompt dump, full user profile
 The consolidation of repeated, sufficiently confident short-lived Memory Assertions into idempotent long-term assertions.
 _Avoid_: Summary, batch update
 
+**Purchase Cadence**:
+A confidence-scored, category-level repeat-purchase pattern and its current `active`, `due`, `lapsed`, or `dormant` state. It is not a permanent label applied to the whole user.
+_Avoid_: Frequent buyer, churned user, repurchase intent
+
 **Memory Agent**:
 The owner of the logged-in user's memory lifecycle: it observes evidence, makes Memory Decisions, recalls projections, reflects, and forgets. It does not retrieve or rank products.
 _Avoid_: Memory writer, profile service

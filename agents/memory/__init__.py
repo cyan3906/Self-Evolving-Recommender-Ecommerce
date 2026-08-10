@@ -41,13 +41,23 @@ from agents.memory.search_agent import (
     SearchRecommendationAgent,
 )
 from agents.memory.store import SQLiteMemoryStore
+from agents.memory.tools import (
+    CategoryPurchaseCadence,
+    CommitMemoryDecisionTool,
+    GetPurchaseBehaviorSummaryTool,
+    PurchaseBehaviorSummary,
+    PurchaseHistoryReader,
+    PurchaseRecord,
+)
 
 __all__ = [
     "BehaviorEvent",
     "BehaviorEventType",
     "CandidateRetriever",
+    "CategoryPurchaseCadence",
     "ClarificationAction",
     "ClarificationDecision",
+    "CommitMemoryDecisionTool",
     "ExpressionDimension",
     "ExpressionProfile",
     "ExpressionProfileLearner",
@@ -55,6 +65,7 @@ __all__ = [
     "HomepageRecommendationAgent",
     "HomepageRecommendationRequest",
     "HomepageRecommendationResponse",
+    "GetPurchaseBehaviorSummaryTool",
     "MemoryAgent",
     "MemoryConsolidator",
     "MemoryContext",
@@ -72,6 +83,9 @@ __all__ = [
     "MemorySearchAgent",
     "MemoryType",
     "MemoryWritePolicy",
+    "PurchaseBehaviorSummary",
+    "PurchaseHistoryReader",
+    "PurchaseRecord",
     "QueryAnalysis",
     "RankedProduct",
     "RerankRequest",

@@ -127,6 +127,85 @@ Output:
 `decision` is `remembered` when at least one memory changed, otherwise
 `ignored`.
 
+### Refresh repeat-purchase cadence
+
+The application may call this on logged-in homepage entry, after purchase data
+has landed, or from a scheduled refresh. Product ranking does not call it
+implicitly, so recall remains read-only.
+
+```python
+MemoryAgent.refresh_purchase_cadence(
+    user_id: str,
+    as_of: datetime | None = None,
+) -> MemoryDecision
+```
+
+Agent input:
+
+```json
+{
+  "user_id": "user_001",
+  "as_of": "2026-08-10T10:00:00Z"
+}
+```
+
+Agent output:
+
+```json
+{
+  "event_id": "purchase-cadence:user_001:2026-08-10",
+  "user_id": "user_001",
+  "decision": "remembered",
+  "changed_memories": [
+    {
+      "id": "memory-uuid",
+      "user_id": "user_001",
+      "memory_type": "purchase_cadence",
+      "scope": "recent",
+      "key": "purchase_cadence:coffee",
+      "value": {
+        "category": "coffee",
+        "status": "due",
+        "last_purchase_at": "2026-07-31T10:00:00+00:00",
+        "expected_interval_days": 10.0,
+        "purchase_count": 5,
+        "due_at": "2026-08-10T10:00:00+00:00"
+      },
+      "confidence": 0.8,
+      "evidence_count": 1,
+      "source": "purchase_behavior_tool",
+      "created_at": "2026-08-10T10:00:00Z",
+      "updated_at": "2026-08-10T10:00:00Z",
+      "expires_at": null,
+      "deleted_at": null,
+      "version": 1
+    }
+  ],
+  "soft_deleted_count": 0,
+  "warnings": []
+}
+```
+
+Tool contracts used by the Agent:
+
+```python
+GetPurchaseBehaviorSummaryTool.run(
+    user_id: str,
+    as_of: datetime | None = None,
+) -> PurchaseBehaviorSummary
+
+CommitMemoryDecisionTool.run(
+    event_id: str,
+    user_id: str,
+    operations: Iterable[MemoryOperation],
+) -> MemoryDecision
+```
+
+The first tool reads purchase rows through an injected adapter and returns
+category counts, 30/90-day counts, days since purchase, and median purchase
+interval. The second tool is the mutation boundary for this cadence flow; it
+validates the complete batch and rejects cross-user writes before persisting.
+
 ### Plan a search interaction
 
 ```python
@@ -188,6 +267,7 @@ MemoryAgent.recall_for_homepage(user_id: str) -> MemoryContext
   "daily_intents": [],
   "recent_preferences": [],
   "long_term_preferences": [],
+  "cadence_signals": [],
   "negative_preferences": [],
   "generated_at": "2026-08-10T10:00:00Z",
   "memory_version": 5
@@ -277,6 +357,7 @@ Output:
     "daily_intent_count": 1,
     "recent_preference_count": 2,
     "long_term_preference_count": 1,
+    "cadence_signal_count": 1,
     "negative_preference_count": 0,
     "changed_position_count": 3,
     "expression_profile_updated": true,
@@ -341,6 +422,7 @@ Output:
     "daily_intent_count": 1,
     "recent_preference_count": 2,
     "long_term_preference_count": 1,
+    "cadence_signal_count": 1,
     "negative_preference_count": 1,
     "changed_position_count": 2,
     "expression_profile_updated": false,

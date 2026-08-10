@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta
+
 from agents.memory.consolidator import MemoryConsolidator
 from agents.memory.expression import ExpressionProfileLearner
 from agents.memory.models import (
@@ -19,6 +21,16 @@ from agents.memory.models import (
 from agents.memory.policy import MemoryWritePolicy, item_value
 from agents.memory.projector import MemoryProjector
 from agents.memory.store import SQLiteMemoryStore
+from agents.memory.tools import (
+    CommitMemoryDecisionTool,
+    GetPurchaseBehaviorSummaryTool,
+)
+
+
+_CADENCE_MIN_PURCHASES = 3
+_CADENCE_DUE_RATIO = 0.8
+_CADENCE_LAPSED_RATIO = 1.8
+_CADENCE_DORMANT_RATIO = 4.0
 
 
 class MemoryAgent:
@@ -32,44 +44,54 @@ class MemoryAgent:
         projector: MemoryProjector | None = None,
         consolidator: MemoryConsolidator | None = None,
         expression_learner: ExpressionProfileLearner | None = None,
+        commit_tool: CommitMemoryDecisionTool | None = None,
+        purchase_behavior_tool: GetPurchaseBehaviorSummaryTool | None = None,
     ) -> None:
         self._store = store
         self._policy = policy or MemoryWritePolicy()
         self._projector = projector or MemoryProjector(store)
         self._consolidator = consolidator or MemoryConsolidator(store)
         self._expression = expression_learner or ExpressionProfileLearner(store)
+        self._commit = commit_tool or CommitMemoryDecisionTool(store)
+        self._purchase_behavior = purchase_behavior_tool
         self.last_warnings: list[str] = []
 
     def observe(self, event: BehaviorEvent) -> MemoryDecision:
         """Turn trusted behavior evidence into one explicit memory decision."""
         self._require_user_id(event.user_id)
-        warnings: list[str] = []
-        changed: list[MemoryRecord] = []
-
         if event.event_type is BehaviorEventType.SEARCH:
+            warnings: list[str] = []
+            changed: list[MemoryRecord] = []
             profile_record = self._expression.observe_search(event)
             if profile_record is None:
                 warnings.append("blank search query did not update expression profile")
             else:
                 changed.append(profile_record)
-        else:
-            plan = self._policy.plan(event)
-            warnings.extend(plan.warnings)
-            changed.extend(self._apply(plan.operations, warnings))
+            self.last_warnings = warnings
+            return MemoryDecision(
+                event_id=event.event_id,
+                user_id=event.user_id,
+                decision=(
+                    MemoryDecisionType.REMEMBERED
+                    if changed
+                    else MemoryDecisionType.IGNORED
+                ),
+                changed_memories=changed,
+                warnings=warnings,
+            )
 
+        plan = self._policy.plan(event)
+        operations = list(plan.operations)
         if event.event_type is BehaviorEventType.PURCHASE:
-            self._close_purchase_intents(event)
-
-        self.last_warnings = warnings
-        return MemoryDecision(
+            operations.extend(self._purchase_intent_delete_operations(event))
+        decision = self._commit.run(
             event_id=event.event_id,
             user_id=event.user_id,
-            decision=(
-                MemoryDecisionType.REMEMBERED if changed else MemoryDecisionType.IGNORED
-            ),
-            changed_memories=changed,
-            warnings=warnings,
+            operations=operations,
+            warnings=plan.warnings,
         )
+        self.last_warnings = decision.warnings
+        return decision
 
     def plan_search(self, user_id: str, query: str) -> ClarificationDecision:
         """Choose a non-ranking interaction policy from query completeness and habit."""
@@ -88,6 +110,79 @@ class MemoryAgent:
         self._require_user_id(user_id)
         return self._consolidator.reflect(user_id)
 
+    def refresh_purchase_cadence(
+        self,
+        user_id: str,
+        *,
+        as_of: datetime | None = None,
+    ) -> MemoryDecision:
+        """Refresh repeat-purchase state without turning a user into a fixed label."""
+        self._require_user_id(user_id)
+        if self._purchase_behavior is None:
+            raise RuntimeError("purchase behavior tool is not configured")
+
+        summary = self._purchase_behavior.run(user_id, as_of=as_of)
+        existing = {
+            record.key: record
+            for record in self._store.get_active(user_id)
+            if record.memory_type is MemoryType.PURCHASE_CADENCE
+            and record.scope is MemoryScope.RECENT
+        }
+        operations: list[MemoryOperation] = []
+        for category in summary.categories:
+            expected_days = category.median_interval_days
+            if (
+                category.purchase_count < _CADENCE_MIN_PURCHASES
+                or expected_days is None
+                or expected_days <= 0
+            ):
+                continue
+
+            ratio = category.days_since_purchase / expected_days
+            if ratio < _CADENCE_DUE_RATIO:
+                status = "active"
+            elif ratio <= _CADENCE_LAPSED_RATIO:
+                status = "due"
+            elif ratio <= _CADENCE_DORMANT_RATIO:
+                status = "lapsed"
+            else:
+                status = "dormant"
+
+            key = f"purchase_cadence:{_normalize(category.category)}"
+            due_at = category.last_purchase_at + timedelta(days=expected_days)
+            value = {
+                "category": category.category,
+                "status": status,
+                "last_purchase_at": category.last_purchase_at.isoformat(),
+                "expected_interval_days": round(expected_days, 4),
+                "purchase_count": category.purchase_count,
+                "due_at": due_at.isoformat(),
+            }
+            if key in existing and existing[key].value == value:
+                continue
+            operations.append(MemoryOperation(
+                operation=MemoryOperationType.UPSERT,
+                user_id=user_id,
+                memory_type=MemoryType.PURCHASE_CADENCE,
+                scope=MemoryScope.RECENT,
+                key=key,
+                value=value,
+                confidence=min(0.95, 0.5 + 0.1 * (category.purchase_count - 2)),
+                source="purchase_behavior_tool",
+                reason=f"category purchase cadence changed to {status}",
+                source_event_id=(
+                    f"purchase-cadence:{user_id}:{summary.as_of.date().isoformat()}"
+                ),
+            ))
+
+        decision = self._commit.run(
+            event_id=f"purchase-cadence:{user_id}:{summary.as_of.date().isoformat()}",
+            user_id=user_id,
+            operations=operations,
+        )
+        self.last_warnings = decision.warnings
+        return decision
+
     def forget(
         self,
         user_id: str,
@@ -100,14 +195,23 @@ class MemoryAgent:
         normalized_key = _normalize(key)
         if not normalized_key:
             raise ValueError("memory key cannot be blank")
-        return self._store.soft_delete(
-            user_id,
-            memory_type,
-            scope,
-            normalized_key,
-            reason="explicit user memory deletion",
-            source_event_id=event_id,
+        decision = self._commit.run(
+            event_id=event_id,
+            user_id=user_id,
+            operations=[MemoryOperation(
+                operation=MemoryOperationType.SOFT_DELETE,
+                user_id=user_id,
+                memory_type=memory_type,
+                scope=scope,
+                key=normalized_key,
+                value={},
+                confidence=1.0,
+                source="explicit_user",
+                reason="explicit user memory deletion",
+                source_event_id=event_id,
+            )],
         )
+        return decision.soft_deleted_count == 1
 
     # Compatibility wrappers keep callers on the audited Agent boundary.
     def record_event(self, event: BehaviorEvent) -> list[MemoryRecord]:
@@ -128,25 +232,15 @@ class MemoryAgent:
     ) -> bool:
         return self.forget(user_id, memory_type, scope, key, event_id)
 
-    def _apply(
+    def _purchase_intent_delete_operations(
         self,
-        candidates: tuple[MemoryOperation, ...],
-        warnings: list[str],
-    ) -> list[MemoryRecord]:
-        records: list[MemoryRecord] = []
-        for candidate in candidates:
-            operation = MemoryOperation.model_validate(candidate)
-            if operation.operation is not MemoryOperationType.UPSERT:
-                warnings.append(f"unsupported memory operation ignored: {operation.operation}")
-                continue
-            records.append(self._store.apply(operation))
-        return records
-
-    def _close_purchase_intents(self, event: BehaviorEvent) -> None:
+        event: BehaviorEvent,
+    ) -> list[MemoryOperation]:
         product_id = item_value(event.payload)
         if product_id is None:
-            return
+            return []
         target_key = f"shopping_intent:{product_id}"
+        operations: list[MemoryOperation] = []
         for record in self._store.get_active(event.user_id):
             recorded_product = record.value.get("product_id")
             matches_value = (
@@ -158,14 +252,19 @@ class MemoryAgent:
                 and record.scope is MemoryScope.DAILY
                 and (record.key == target_key or matches_value)
             ):
-                self._store.soft_delete(
-                    event.user_id,
-                    record.memory_type,
-                    record.scope,
-                    record.key,
+                operations.append(MemoryOperation(
+                    operation=MemoryOperationType.SOFT_DELETE,
+                    user_id=event.user_id,
+                    memory_type=record.memory_type,
+                    scope=record.scope,
+                    key=record.key,
+                    value=record.value,
+                    confidence=1.0,
+                    source="purchase_completion",
                     reason="purchase completed shopping intent",
                     source_event_id=event.event_id,
-                )
+                ))
+        return operations
 
     @staticmethod
     def _require_user_id(user_id: str) -> None:

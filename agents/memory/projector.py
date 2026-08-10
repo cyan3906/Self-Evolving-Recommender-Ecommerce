@@ -93,6 +93,19 @@ class MemoryProjector:
             ),
             relevance_terms,
         )
+        cadence_records = [
+            record for record in records
+            if record.memory_type is MemoryType.PURCHASE_CADENCE
+            and record.scope is MemoryScope.RECENT
+            and record.confidence >= _MIN_PROJECTABLE_CONFIDENCE
+            and record.value.get("status") in {"due", "lapsed"}
+        ]
+        if scene == "search":
+            cadence_records = [
+                record for record in cadence_records
+                if self._is_relevant(record, relevance_terms)
+            ]
+        cadence_signals = self._sorted(cadence_records, relevance_terms)
         negative_preferences = self._sorted(
             record for record in records
             if record.memory_type is MemoryType.NEGATIVE_PREFERENCE
@@ -109,6 +122,7 @@ class MemoryProjector:
             daily_intents=daily_intents,
             recent_preferences=recent_preferences,
             long_term_preferences=long_term_preferences,
+            cadence_signals=cadence_signals,
             negative_preferences=negative_preferences,
             memory_version=max((record.version for record in records), default=0),
         )
@@ -133,13 +147,19 @@ class MemoryProjector:
 
     @staticmethod
     def _weighted(record: MemoryRecord) -> WeightedMemory:
+        weight = LEVEL_WEIGHT[record.scope] * record.confidence
+        if (
+            record.memory_type is MemoryType.PURCHASE_CADENCE
+            and record.value.get("status") == "lapsed"
+        ):
+            weight *= 0.5
         return WeightedMemory(
             memory_type=record.memory_type,
             scope=record.scope,
             key=record.key,
             value=record.value,
             confidence=record.confidence,
-            weight=LEVEL_WEIGHT[record.scope] * record.confidence,
+            weight=weight,
             source_memory_id=record.id,
         )
 

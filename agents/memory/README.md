@@ -4,6 +4,40 @@ The memory package is one domain service with two consumers:
 
 Public request and response examples are documented in [AGENT_IO.md](./AGENT_IO.md).
 
+## Package structure
+
+```text
+agents/memory/                 # one Memory Agent
+├── tools/                     # deterministic capabilities owned by this Agent
+│   ├── purchase_behavior.py   # read and summarize category purchase cadence
+│   └── memory_commit.py       # validate and audit memory mutations
+├── agent.py                   # decide when and how tools are called
+├── policy.py                  # convert behavior evidence to typed operations
+├── projector.py               # build bounded scene-specific ranking context
+├── reranker.py                # consume context; never read the memory store
+└── store.py                   # persistence implementation
+```
+
+The Agent is intentionally thin. New purchase-cadence capabilities live in
+`tools/`; behavior, cadence, and explicit-forget mutations pass through
+`CommitMemoryDecisionTool`. The older expression/reflection components remain
+compatible and can be migrated to the same boundary later.
+
+```mermaid
+flowchart LR
+    A["Homepage entry / scheduled refresh"] --> B["MemoryAgent"]
+    B --> C["GetPurchaseBehaviorSummaryTool"]
+    C --> D["Category cadence evidence"]
+    D --> B
+    B --> E["CommitMemoryDecisionTool"]
+    E --> F[("One structured memory store")]
+    F --> G["MemoryProjector"]
+    G --> H["Layered MemoryContext"]
+    H --> I["MemoryReranker"]
+    J["ES / Milvus candidates"] --> I
+    I --> K["Search or homepage results"]
+```
+
 - `HomepageRecommendationAgent` uses shopping intent, qualified preferences,
   negative feedback, and purchase suppression.
 - `SearchRecommendationAgent` keeps current query constraints at the highest
@@ -20,9 +54,25 @@ Public request and response examples are documented in [AGENT_IO.md](./AGENT_IO.
 | Add to cart | Daily shopping intent | Strong homepage/search signal |
 | Purchase | Durable purchase record | Closes matching shopping intent |
 | Search query | Updates expression profile only | Explicit constraints remain request-local L0 |
+| Repeated purchases | Category-level cadence state | `due` is a soft boost; `lapsed` is weaker; `active` and `dormant` are not injected |
 
 LLM output is not a write authority. A future extractor may propose typed
-evidence, but `MemoryWritePolicy` and the Pydantic contracts remain the gate.
+evidence, but `MemoryWritePolicy`, `CommitMemoryDecisionTool`, and the Pydantic
+contracts remain the gates.
+
+## Purchase cadence evolution
+
+`refresh_purchase_cadence` learns only from categories with at least three
+purchases. It does not label the whole user as a “frequent buyer” or “churned
+user”. The expected interval is the median of observed purchase intervals, and
+the current category state evolves through `active`, `due`, `lapsed`, and
+`dormant`.
+
+This distinction matters for ranking: a due repeat purchase is useful evidence,
+a lapsed pattern is only a weak reactivation signal, and very old dormant
+behavior must not keep pushing products forever. Search additionally requires
+the cadence category to be relevant to the current query; homepage projection
+may use all actionable cadence categories.
 
 ## Expression evolution
 

@@ -93,6 +93,7 @@ class MemoryReranker:
             context.daily_intents,
             context.recent_preferences,
             context.long_term_preferences,
+            context.cadence_signals,
         ):
             contribution, level_reasons = self._score_memories(product, memories)
             score += contribution
@@ -208,6 +209,8 @@ def _matches(product: dict[str, Any], memory: WeightedMemory) -> bool:
         return _same(product["brand"], _value(memory, "brand"))
     if memory.memory_type is MemoryType.CATEGORY_PREFERENCE:
         return _same(product["category"], _value(memory, "category"))
+    if memory.memory_type is MemoryType.PURCHASE_CADENCE:
+        return _same(product["category"], _value(memory, "category"))
     if memory.memory_type is MemoryType.FEATURE_PREFERENCE:
         return _contains(product, _value(memory, "feature"))
     if memory.memory_type in {MemoryType.SHOPPING_INTENT, MemoryType.PURCHASED_PRODUCT}:
@@ -295,6 +298,7 @@ def _memory_label(memory: WeightedMemory) -> str:
         MemoryType.FEATURE_PREFERENCE: "feature",
         MemoryType.SHOPPING_INTENT: "intent",
         MemoryType.PURCHASED_PRODUCT: "product_id",
+        MemoryType.PURCHASE_CADENCE: "category",
     }
     field = fields.get(memory.memory_type)
     value = _value(memory, field) if field else memory.value.get("value")

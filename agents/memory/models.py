@@ -20,6 +20,7 @@ class MemoryType(str, Enum):
     NEGATIVE_PREFERENCE = "negative_preference"
     PURCHASED_PRODUCT = "purchased_product"
     EXPRESSION_PROFILE = "expression_profile"
+    PURCHASE_CADENCE = "purchase_cadence"
 
 
 class MemoryScope(str, Enum):
@@ -110,6 +111,7 @@ class MemoryDecision(StrictModel):
     user_id: str
     decision: MemoryDecisionType
     changed_memories: list[MemoryRecord] = Field(default_factory=list)
+    soft_deleted_count: int = Field(default=0, ge=0)
     warnings: list[str] = Field(default_factory=list)
 
 
@@ -168,6 +170,7 @@ class MemoryContext(StrictModel):
     daily_intents: list[WeightedMemory] = Field(default_factory=list)
     recent_preferences: list[WeightedMemory] = Field(default_factory=list)
     long_term_preferences: list[WeightedMemory] = Field(default_factory=list)
+    cadence_signals: list[WeightedMemory] = Field(default_factory=list)
     negative_preferences: list[WeightedMemory] = Field(default_factory=list)
     generated_at: datetime = Field(default_factory=utc_now)
     memory_version: int = 0
@@ -179,6 +182,7 @@ class MemoryContext(StrictModel):
             self.daily_intents,
             self.recent_preferences,
             self.long_term_preferences,
+            self.cadence_signals,
             self.negative_preferences,
         ))
 
@@ -254,6 +258,7 @@ class MemoryRankingTrace(StrictModel):
     daily_intent_count: int = 0
     recent_preference_count: int = 0
     long_term_preference_count: int = 0
+    cadence_signal_count: int = 0
     negative_preference_count: int = 0
     changed_position_count: int = 0
     expression_profile_updated: bool = False
