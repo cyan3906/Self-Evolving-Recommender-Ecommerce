@@ -20,6 +20,7 @@ import logging
 import re
 import sys
 import json
+import threading
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -36,6 +37,7 @@ from langchain.agents.middleware import (
     ToolCallRequest,
     dynamic_prompt,
 )
+from langchain_core.messages import ToolMessage,AIMessage,HumanMessage
 from langchain_core.tools import BaseTool
 from langchain_openai import ChatOpenAI
 from langgraph.checkpoint.memory import InMemorySaver
@@ -43,8 +45,8 @@ from typing_extensions import NotRequired
 
 from langchain_core.globals import set_debug
 
-# set_debug(True)
-set_debug(False)
+set_debug(True)
+# set_debug(False)
 
 # ---------------------------------------------------------------------------
 # 项目路径与项目配置
@@ -505,6 +507,573 @@ class HybridSearchSkillMiddleware(AgentMiddleware):
         return await handler(request)
 
 
+class DuplicateToolCallMiddleware(AgentMiddleware):
+    """
+    对单次模型响应中的重复 Tool Call 去重。
+
+    解决这种情况：
+
+        AIMessage.tool_calls = [
+            hybrid_search(query="华为手机"),
+            hybrid_search(query="华为手机"),
+        ]
+
+    去重后：
+
+        AIMessage.tool_calls = [
+            hybrid_search(query="华为手机"),
+        ]
+
+    判断标准：
+
+        tool_name + normalized args
+
+    注意：
+        tool_call_id 不参与比较。
+
+    因为同一个逻辑 Tool Call，
+    模型每次生成的 id 本来就可能不同。
+    """
+
+    @staticmethod
+    def _build_signature(
+        tool_call: Mapping[str, Any],
+    ) -> str:
+        """
+        构造 Tool Call 唯一签名。
+
+        例如：
+
+        hybrid_search:{
+            "query":"华为手机",
+            "es_top_k":15
+        }
+        """
+
+        tool_name = str(
+            tool_call.get("name") or ""
+        )
+
+        args = tool_call.get("args") or {}
+
+        normalized_args = json.dumps(
+            args,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            default=str,
+        )
+
+        return (
+            f"{tool_name}:{normalized_args}"
+        )
+
+    @classmethod
+    def _deduplicate_tool_calls(
+        cls,
+        tool_calls: Sequence[
+            Mapping[str, Any]
+        ],
+    ) -> list[dict[str, Any]]:
+        """
+        保留第一次出现的 Tool Call，
+        删除后续完全相同的调用。
+        """
+
+        seen: set[str] = set()
+
+        deduplicated: list[
+            dict[str, Any]
+        ] = []
+
+        for tool_call in tool_calls:
+
+            signature = (
+                cls._build_signature(
+                    tool_call
+                )
+            )
+
+            if signature in seen:
+
+                logger.warning(
+                    "Duplicate tool call removed: "
+                    "tool=%s args=%s id=%s",
+                    tool_call.get("name"),
+                    tool_call.get("args"),
+                    tool_call.get("id"),
+                )
+
+                continue
+
+            seen.add(signature)
+
+            deduplicated.append(
+                dict(tool_call)
+            )
+
+        return deduplicated
+
+    @classmethod
+    def _deduplicate_response(
+        cls,
+        response: ModelResponse,
+    ) -> ModelResponse:
+        """
+        清洗模型返回的所有 AIMessage。
+        """
+
+        new_results = []
+
+        changed = False
+
+        for message in response.result:
+
+            # 非 AIMessage 不处理
+            if not isinstance(
+                message,
+                AIMessage,
+            ):
+                new_results.append(
+                    message
+                )
+                continue
+
+            tool_calls = (
+                message.tool_calls or []
+            )
+
+            if len(tool_calls) <= 1:
+                new_results.append(
+                    message
+                )
+                continue
+
+            deduplicated = (
+                cls._deduplicate_tool_calls(
+                    tool_calls
+                )
+            )
+
+            # 没有重复
+            if len(deduplicated) == len(
+                tool_calls
+            ):
+                new_results.append(
+                    message
+                )
+                continue
+
+            changed = True
+
+            # 保留原 AIMessage 的：
+            #
+            # content
+            # response_metadata
+            # usage_metadata
+            # id
+            # additional_kwargs
+            # ...
+            #
+            # 只替换 tool_calls
+            cleaned_message = (
+                message.model_copy(
+                    update={
+                        "tool_calls": (
+                            deduplicated
+                        )
+                    }
+                )
+            )
+
+            new_results.append(
+                cleaned_message
+            )
+
+            logger.info(
+                "Tool calls deduplicated: "
+                "before=%d after=%d",
+                len(tool_calls),
+                len(deduplicated),
+            )
+
+        if not changed:
+            return response
+
+        return ModelResponse(
+            result=new_results,
+            structured_response=(
+                response.structured_response
+            ),
+        )
+
+    def wrap_model_call(
+        self,
+        request: ModelRequest,
+        handler: Callable[
+            [ModelRequest],
+            ModelResponse,
+        ],
+    ) -> ModelResponse:
+
+        # ① 真正调用模型
+        response = handler(request)
+
+        # ② 模型结果返回以后
+        #    在 ToolNode 执行之前去重
+        response = (
+            self._deduplicate_response(
+                response
+            )
+        )
+
+        return response
+
+    async def awrap_model_call(
+        self,
+        request: ModelRequest,
+        handler: Callable[
+            [ModelRequest],
+            Any,
+        ],
+    ) -> ModelResponse:
+
+        response = await handler(
+            request
+        )
+
+        response = (
+            self._deduplicate_response(
+                response
+            )
+        )
+
+        return response
+    
+class ConsecutiveDuplicateToolGuardMiddleware(AgentMiddleware):
+    """
+    防止 Agent 连续执行相同工具的中间件。
+
+    默认判断规则：
+        只比较工具名称。
+
+    例如：
+        hybrid_search -> hybrid_search
+
+    第二次 hybrid_search 会被短路，不会真正执行 handler，
+    而是向模型返回一个 ToolMessage，要求它复用上一次工具结果。
+
+    如果希望：
+        同一个工具 + 相同参数 才算重复
+
+    初始化时使用：
+        ConsecutiveDuplicateToolGuardMiddleware(
+            compare_args=True,
+        )
+
+    这样：
+        hybrid_search(query="手机")
+        hybrid_search(query="电脑")
+
+    仍然允许连续执行。
+
+    状态保存在当前 invoke 独立的 runtime.context.values 中，
+    不保存在 Middleware 实例属性中，因此不同请求之间不会共享
+    last tool 状态。
+    """
+
+    CONTEXT_LAST_SIGNATURE_KEY = (
+        "_consecutive_tool_guard_last_signature"
+    )
+    CONTEXT_LOCK_KEY = (
+        "_consecutive_tool_guard_lock"
+    )
+
+    def __init__(
+        self,
+        *,
+        compare_args: bool = False,
+    ) -> None:
+        super().__init__()
+        self.compare_args = compare_args
+
+    @staticmethod
+    def _get_context_values(
+        runtime: Any,
+    ) -> dict[str, Any] | None:
+        if runtime is None:
+            return None
+
+        context = getattr(runtime, "context", None)
+
+        if isinstance(context, AgentRuntimeContext):
+            return context.values
+
+        return None
+
+    def before_agent(
+        self,
+        state: AgentState,
+        runtime: Any,
+    ) -> dict[str, Any] | None:
+        """
+        每次 invoke 开始时重置 last tool。
+
+        因此：
+            - 只限制当前这一轮 Agent 执行过程中的连续调用；
+            - 不会因为上一个用户 turn 最后调用了 hybrid_search，
+              就阻止下一个用户 turn 第一次调用 hybrid_search。
+        """
+        context_values = self._get_context_values(runtime)
+
+        if context_values is None:
+            return None
+
+        context_values[
+            self.CONTEXT_LAST_SIGNATURE_KEY
+        ] = None
+        context_values[
+            self.CONTEXT_LOCK_KEY
+        ] = threading.Lock()
+
+        return None
+
+    def _build_signature(
+        self,
+        tool_call: Mapping[str, Any],
+    ) -> str:
+        tool_name = str(
+            tool_call.get("name") or ""
+        )
+
+        if not self.compare_args:
+            return tool_name
+
+        args = tool_call.get("args") or {}
+
+        normalized_args = json.dumps(
+            args,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            default=str,
+        )
+
+        return f"{tool_name}:{normalized_args}"
+
+    def _get_lock(
+        self,
+        context_values: dict[str, Any],
+    ) -> threading.Lock:
+        """
+        正常情况下 lock 已经在 before_agent 中创建。
+        这里保留 fallback，方便 Middleware 单独测试。
+        """
+        lock = context_values.get(
+            self.CONTEXT_LOCK_KEY
+        )
+
+        if isinstance(lock, type(threading.Lock())):
+            return lock
+
+        new_lock = threading.Lock()
+        context_values[
+            self.CONTEXT_LOCK_KEY
+        ] = new_lock
+        return new_lock
+
+    def _reserve_tool_call(
+        self,
+        request: ToolCallRequest,
+    ) -> tuple[
+        bool,
+        dict[str, Any] | None,
+        threading.Lock | None,
+        str,
+        str | None,
+    ]:
+        """
+        判断当前调用是否与上一次相同，并原子地预占本次调用。
+
+        预占发生在真正调用 handler 之前，主要是为了处理模型一次
+        生成多个相同 tool call、工具节点并发执行的情况。
+        """
+        context_values = self._get_context_values(
+            request.runtime
+        )
+
+        signature = self._build_signature(
+            request.tool_call
+        )
+
+        if context_values is None:
+            return (
+                False,
+                None,
+                None,
+                signature,
+                None,
+            )
+
+        lock = self._get_lock(context_values)
+
+        with lock:
+            previous_signature = context_values.get(
+                self.CONTEXT_LAST_SIGNATURE_KEY
+            )
+
+            if previous_signature == signature:
+                return (
+                    True,
+                    context_values,
+                    lock,
+                    signature,
+                    previous_signature,
+                )
+
+            # 先记录再执行，避免并发的第二个相同工具同时穿透。
+            context_values[
+                self.CONTEXT_LAST_SIGNATURE_KEY
+            ] = signature
+
+        return (
+            False,
+            context_values,
+            lock,
+            signature,
+            previous_signature,
+        )
+
+    def _rollback_reservation(
+        self,
+        *,
+        context_values: dict[str, Any] | None,
+        lock: threading.Lock | None,
+        signature: str,
+        previous_signature: str | None,
+    ) -> None:
+        """
+        工具真正执行异常时回滚预占。
+
+        这样失败的工具仍然可以被 Agent 再次尝试，避免把正常的
+        retry 也当成重复调用直接拦截。
+        """
+        if context_values is None or lock is None:
+            return
+
+        with lock:
+            current_signature = context_values.get(
+                self.CONTEXT_LAST_SIGNATURE_KEY
+            )
+
+            # 只有当前 last 仍然是本次预占时才回滚，
+            # 防止覆盖期间已经开始执行的其他工具。
+            if current_signature == signature:
+                context_values[
+                    self.CONTEXT_LAST_SIGNATURE_KEY
+                ] = previous_signature
+
+    @staticmethod
+    def _build_blocked_tool_message(
+        request: ToolCallRequest,
+    ) -> ToolMessage:
+        tool_call = request.tool_call
+        tool_name = str(
+            tool_call.get("name") or "unknown_tool"
+        )
+        tool_call_id = str(
+            tool_call.get("id") or ""
+        )
+
+        return ToolMessage(
+            content=(
+                f"工具 {tool_name!r} 已在上一步执行过，"
+                "本次连续重复调用已被系统拦截，没有再次执行。"
+                "请直接复用上一条 ToolMessage 的结果继续推理；"
+                "如果需要更多信息，请修改参数或选择其他工具，"
+                "不要原样再次调用同一工具。"
+            ),
+            tool_call_id=tool_call_id,
+            name=tool_name,
+        )
+
+    def wrap_tool_call(
+        self,
+        request: ToolCallRequest,
+        handler: Callable[
+            [ToolCallRequest],
+            Any,
+        ],
+    ) -> Any:
+        (
+            should_block,
+            context_values,
+            lock,
+            signature,
+            previous_signature,
+        ) = self._reserve_tool_call(request)
+
+        if should_block:
+            logger.warning(
+                "Blocked consecutive duplicate tool call: "
+                "tool=%s, args=%s",
+                request.tool_call.get("name"),
+                request.tool_call.get("args"),
+            )
+            return self._build_blocked_tool_message(
+                request
+            )
+
+        try:
+            return handler(request)
+        except Exception:
+            self._rollback_reservation(
+                context_values=context_values,
+                lock=lock,
+                signature=signature,
+                previous_signature=previous_signature,
+            )
+            raise
+
+    async def awrap_tool_call(
+        self,
+        request: ToolCallRequest,
+        handler: Callable[
+            [ToolCallRequest],
+            Any,
+        ],
+    ) -> Any:
+        (
+            should_block,
+            context_values,
+            lock,
+            signature,
+            previous_signature,
+        ) = self._reserve_tool_call(request)
+
+        if should_block:
+            logger.warning(
+                "Blocked async consecutive duplicate tool call: "
+                "tool=%s, args=%s",
+                request.tool_call.get("name"),
+                request.tool_call.get("args"),
+            )
+            return self._build_blocked_tool_message(
+                request
+            )
+
+        try:
+            return await handler(request)
+        except Exception:
+            self._rollback_reservation(
+                context_values=context_values,
+                lock=lock,
+                signature=signature,
+                previous_signature=previous_signature,
+            )
+            raise
+
+
 class LayerAgentState(AgentState):
     layer_1: Annotated[
         list[dict[str, Any]],
@@ -664,7 +1233,8 @@ class LangChainAgent:
         顺序：
             1. 动态 system prompt middleware；
             2. hybrid_search Skill 参数注入 middleware；
-            3. 模型调用次数限制 middleware。
+            3. 连续重复工具调用拦截 middleware；
+            4. 模型调用次数限制 middleware。
         """
         middleware: list[Any] = []
 
@@ -713,6 +1283,25 @@ class LangChainAgent:
         # 因此这里读取到的是本次真正准备发送给模型的系统提示词。
         middleware.append(
             HybridSearchSkillMiddleware()
+        )
+
+        # 防止模型连续两次执行相同工具。
+        #
+        # compare_args=False：
+        #   只要工具名相同就拦截第二次调用。
+        #
+        # compare_args=True：
+        #   只有“工具名 + 参数”都相同时才拦截，
+        #   同一工具使用不同参数仍允许连续执行。
+        
+        middleware.append(
+            DuplicateToolCallMiddleware() # 解决并行调用相同工具的问题
+        )
+        
+        middleware.append(
+            ConsecutiveDuplicateToolGuardMiddleware( # 解决多次调用工具会出现的连续调用相同工具的问题
+                compare_args=False,
+            )
         )
 
         middleware.append(
