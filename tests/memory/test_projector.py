@@ -56,6 +56,7 @@ def test_search_projects_current_query_above_matching_persisted_memory(store):
     assert {(memory.memory_type, memory.key) for memory in context.current_constraints} == {
         (MemoryType.BRAND_PREFERENCE, "brand:apple"),
         (MemoryType.CATEGORY_PREFERENCE, "category:手机"),
+        (MemoryType.FEATURE_PREFERENCE, "feature:gift"),
         (MemoryType.PRICE_RANGE, "price:max:5000"),
     }
     assert [memory.key for memory in context.daily_intents] == ["shopping_intent:replacement"]
@@ -100,7 +101,7 @@ def test_projection_caps_each_level_and_sorts_by_weight_then_confidence(store):
 
     context = MemoryProjector(store).for_homepage("user_001")
 
-    assert [memory.confidence for memory in context.recent_preferences] == [0.9, 0.8, 0.7, 0.5, 0.3]
+    assert [memory.confidence for memory in context.recent_preferences] == [0.9, 0.8, 0.7, 0.5]
     assert all(memory.weight == pytest.approx(0.65 * memory.confidence) for memory in context.recent_preferences)
 
 
@@ -115,7 +116,7 @@ def test_search_prioritizes_query_relevant_preference_before_historical_fallback
         )
     seed_memory(
         store, memory_type=MemoryType.BRAND_PREFERENCE, scope=MemoryScope.RECENT,
-        key="brand:apple", value={"brand": "Apple"}, confidence=0.1,
+        key="brand:apple", value={"brand": "Apple"}, confidence=0.4,
     )
 
     context = MemoryProjector(store).for_search("user_001", "Apple")
@@ -190,13 +191,28 @@ def test_soft_deleted_memory_cannot_appear_in_projection(store):
     assert all(memory.key != "brand:huawei" for memory in context.recent_preferences)
 
 
-@pytest.mark.parametrize("user_id", ["", "user_002"])
-def test_public_projection_methods_reject_users_other_than_v1_identity(store, user_id):
+@pytest.mark.parametrize("user_id", ["", "   "])
+def test_public_projection_methods_require_logged_in_user_identity(store, user_id):
     from agents.memory.projector import MemoryProjector
 
     projector = MemoryProjector(store)
 
-    with pytest.raises(ValueError, match="user_001"):
+    with pytest.raises(ValueError, match="logged-in user_id"):
         projector.for_homepage(user_id)
-    with pytest.raises(ValueError, match="user_001"):
+    with pytest.raises(ValueError, match="logged-in user_id"):
         projector.for_search(user_id, "Apple")
+
+
+def test_projection_accepts_another_logged_in_user_without_leaking_history(store):
+    from agents.memory.projector import MemoryProjector
+
+    seed_memory(
+        store, memory_type=MemoryType.BRAND_PREFERENCE, scope=MemoryScope.RECENT,
+        key="brand:huawei", value={"brand": "Huawei"}, confidence=0.8,
+    )
+
+    context = MemoryProjector(store).for_search("user_002", "Apple")
+
+    assert [memory.key for memory in context.current_constraints] == ["brand:apple"]
+    assert context.recent_preferences == []
+    assert context.long_term_preferences == []

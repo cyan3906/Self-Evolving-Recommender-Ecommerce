@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 
-from agents.memory.agent import V1_USER_ID, extract_deterministic_query_operations
+from agents.memory.extractors import extract_deterministic_query_operations
 from agents.memory.models import (
     MemoryContext,
     MemoryRecord,
@@ -22,6 +22,7 @@ LEVEL_WEIGHT = {
 }
 
 _LEVEL_CAP = 5
+_MIN_PROJECTABLE_CONFIDENCE = 0.35
 _PREFERENCE_TYPES = {
     MemoryType.CATEGORY_PREFERENCE,
     MemoryType.BRAND_PREFERENCE,
@@ -37,12 +38,12 @@ class MemoryProjector:
         self._store = store
 
     def for_homepage(self, user_id: str) -> MemoryContext:
-        self._require_v1_user(user_id)
+        self._require_user_id(user_id)
         records = self._active_records(user_id)
         return self._context(user_id, "homepage", records)
 
     def for_search(self, user_id: str, query: str) -> MemoryContext:
-        self._require_v1_user(user_id)
+        self._require_user_id(user_id)
         records = self._active_records(user_id)
         constraints = self._query_constraints(user_id, query)
         return self._context(
@@ -75,14 +76,20 @@ class MemoryProjector:
                 record for record in records
                 if record.scope is MemoryScope.RECENT
                 and record.memory_type in _PREFERENCE_TYPES
+                and record.confidence >= _MIN_PROJECTABLE_CONFIDENCE
             ),
             relevance_terms,
         )
+        recent_identities = {
+            (memory.memory_type, memory.key) for memory in recent_preferences
+        }
         long_term_preferences = self._sorted(
             (
                 record for record in records
                 if record.scope is MemoryScope.LONG_TERM
                 and record.memory_type in _PREFERENCE_TYPES
+                and record.confidence >= _MIN_PROJECTABLE_CONFIDENCE
+                and (record.memory_type, record.key) not in recent_identities
             ),
             relevance_terms,
         )
@@ -176,9 +183,9 @@ class MemoryProjector:
         )
 
     @staticmethod
-    def _require_v1_user(user_id: str) -> None:
-        if user_id != V1_USER_ID:
-            raise ValueError(f"MemoryProjector only supports user_id {V1_USER_ID!r}")
+    def _require_user_id(user_id: str) -> None:
+        if not isinstance(user_id, str) or not user_id.strip():
+            raise ValueError("MemoryProjector requires a logged-in user_id")
 
 
 def _normalize(value: object) -> str:
