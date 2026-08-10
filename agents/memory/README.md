@@ -2,6 +2,8 @@
 
 The memory package is one domain service with two consumers:
 
+Public request and response examples are documented in [AGENT_IO.md](./AGENT_IO.md).
+
 - `HomepageRecommendationAgent` uses shopping intent, qualified preferences,
   negative feedback, and purchase suppression.
 - `SearchRecommendationAgent` keeps current query constraints at the highest
