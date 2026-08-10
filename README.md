@@ -11,72 +11,8 @@
 
 </div>
 
----
+<img width="1672" height="941" alt="image" src="https://github.com/user-attachments/assets/74f7db82-3775-457e-82c6-ecdf76a0e966" />
 
-```text
-                   🛍️  User enters the shop
-                           │
-                           ▼
-                  ┌─────────────────┐
-                  │ 🤖 Recommender  │
-                  │      Agent      │
-                  └────────┬────────┘
-                           │
-                   Generates Recommendation
-                           │
-                           ▼
-                 👟  👕  🎧  📱  💻
-                           │
-                           ▼
-                    User Interaction
-                 ┌─────────┴─────────┐
-                 │                   │
-              ❤️ Like             ❌ Ignore
-              🛒 Buy              👎 Reject
-                 │                   │
-                 └─────────┬─────────┘
-                           ▼
-                 🧠 Feedback Analyzer
-                           │
-                 ┌─────────┴─────────┐
-                 │                   │
-             ✅ Success           ❌ Failure
-             Experience           Experience
-                 │                   │
-                 └─────────┬─────────┘
-                           ▼
-                  🧬 Strategy Evolution
-                           │
-                    Extract / Refine
-                    Recommendation
-                       Strategies
-                           │
-                           ▼
-                 📚 Strategy Memory
-                           │
-            ┌──────────────┼──────────────┐
-            ▼              ▼              ▼
-       🎮 Gaming       👗 Fashion      💻 Digital
-       Strategy        Strategy         Strategy
-            │              │              │
-            └──────────────┬──────────────┘
-                           ▼
-                🔍 Scene-Aware Retrieval
-                           │
-                           ▼
-                  🤖 Next Recommendation
-                           │
-                           ▼
-
-                  Better than last time.
-                           ↓
-                  Better than last time.
-                           ↓
-                  Better than last time.
-                           ↓
-
-                     ♾️ KEEP EVOLVING
-```
 
 <div align="center">
 
