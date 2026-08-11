@@ -4,7 +4,7 @@ from collections import defaultdict
 from typing import Any
 import sys
 from pathlib import Path
-
+from copy import deepcopy
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.append(str(PROJECT_ROOT))
@@ -17,7 +17,16 @@ from langchain.messages import ToolMessage
 from langgraph.types import Command
 
 # from langchain.agents import LayerAgentState
-from agent_init import LayerAgentState
+
+from evolution_agent.agent_init import LayerAgentState
+from evolution_agent.tools.is_execute_tool import StateMachineScheduler
+
+
+STATE_PENDING = 0       # 未开始
+STATE_RUNNING = 1       # 执行中
+STATE_COMPLETED = 2     # 已完成
+STATE_ERROR = 3         # 异常
+
 
 # @tool(description="使用 Elasticsearch 检索商品")
 def es_search(query: str, top_k: int = 10) -> list[dict[str, Any]]:
@@ -213,13 +222,19 @@ def hybrid_search(
     4. 将完整检索结构写入 AgentState；
     5. 给模型返回简化后的 ToolMessage。
     """
-
-    import time
-    time.sleep(1)
     
-    if not is_execute:
-        return Command()
-
+    print(runtime.state)
+    input("进入了hybrid_search,点我继续")
+    
+    scheduler = StateMachineScheduler(runtime.state["state_machine"])
+    
+    res = scheduler.resolve("hybrid_search")
+    
+    executable_tool = res.get("executable_tools")[0]
+    
+    if res.get("requested_tool") != executable_tool:
+        return f"工具调用顺序错误，请先调用 {executable_tool} 工具。"
+    
     print("11111")
     print(es_top_k)
     print(milvus_top_k)
@@ -286,44 +301,53 @@ def hybrid_search(
         "final_results": final_results,
     }
 
-    # =============================
-    # 5. 更新 AgentState
-    # =============================
+    # ==========================================
+    # 6. 更新 state_machine
+    # ==========================================
 
-    # return Command(
-    #     update={
-    #         "layer_1": [
-    #             {
-    #                 "tool": "hybrid_search",
-    #                 "query": query,
-    #                 "es_results": es_results,
-    #                 "milvus_results": milvus_results,
-    #                 "final_results": final_results,
-    #             }
-    #         ],
+    # 不要直接修改 runtime.state
+    # 复制一份当前状态机
+    new_state_machine = deepcopy(
+        runtime.state["state_machine"]
+    )
 
-    #         "messages": [
-    #             ToolMessage(
-    #                 content="混合检索完成",
-    #                 tool_call_id=runtime.tool_call_id,
-    #             )
-    #         ],
-    #     }
-    # )
 
+    tool_mapping = new_state_machine.get(
+        "tool_mapping",
+        {}
+    )
+
+    tool_meta = tool_mapping.get(
+        "hybrid_search"
+    )
+
+    if tool_meta is not None:
+
+        # 0 = 未执行
+        # 1 = 执行中（如果你有这个状态）
+        # 2 = 已完成
+        tool_meta["state"] = 2
+
+        # 保存这个工具产生的结果
+        tool_meta["result"] = retrieval_state
+    
     return Command(
         update={
-            # 真正的数据保存在 State
-            "layer_1": [retrieval_state],
-            
-            # ToolMessage 给模型看
+            # --------------------------
+            # 保存更新后的状态机
+            # --------------------------
+            "state_machine": new_state_machine,
+            # --------------------------
+            # 给 LLM 看的 ToolMessage
+            # --------------------------
             "messages": [
                 ToolMessage(
                     content=(
-                        f"已经调用了hybrid_search工具，下次请不要重复调用。下次请不要重复调用。下次请不要重复调用。混合检索完成，共获得 "
-                        f"{len(final_results)} 条融合结果。"
-                        f"完整结果已经保存到 "
-                        f"AgentState.retrieval_layer。"
+                        "hybrid_search 已执行完成。"
+                        "请不要重复调用 hybrid_search。"
+                        f"混合检索共获得 {len(final_results)} 条融合结果。"
+                        "完整结果已保存到 "
+                        "AgentState.retrieval_layer。"
                     ),
                     tool_call_id=runtime.tool_call_id,
                 )

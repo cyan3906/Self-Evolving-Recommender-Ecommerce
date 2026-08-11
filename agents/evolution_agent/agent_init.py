@@ -24,7 +24,7 @@ import threading
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Annotated
+from typing import Any, Annotated, Dict, Optional
 import operator
 from uuid import uuid4
 
@@ -750,6 +750,7 @@ class DuplicateToolCallMiddleware(AgentMiddleware):
 
         return response
     
+    
 class ConsecutiveDuplicateToolGuardMiddleware(AgentMiddleware):
     """
     防止 Agent 连续执行相同工具的中间件。
@@ -1074,22 +1075,11 @@ class ConsecutiveDuplicateToolGuardMiddleware(AgentMiddleware):
             raise
 
 
-class LayerAgentState(AgentState):
-    layer_1: Annotated[
-        list[dict[str, Any]],
-        operator.add
-    ]
-    
-    layer_2: Annotated[
-        list[dict[str, Any]],
-        operator.add
-    ]
+# 这里需要从规划skill智能体中导入 LayerAgentState
+from agents.evolution_agent.subagents.plan_skill import return_sequential_skill_plan
 
-    layer_3: Annotated[
-        list[dict[str, Any]],
-        operator.add
-    ]
-
+class LayerAgentState:
+    state_machine: Dict[str, Any] 
 
 class LangChainAgent:
     """
@@ -1427,7 +1417,8 @@ class LangChainAgent:
                             "role": "user",
                             "content": normalized_input,
                         }
-                    ]
+                    ],
+                    "state_machine": return_sequential_skill_plan(),
                 },
                 config=self._build_config(
                     normalized_thread_id
@@ -1549,6 +1540,7 @@ def build_agent(
             "你是一个电商推荐系统 Agent。"
             "需要检索信息时调用工具，不要编造检索结果。"
         )
+        
     else:
 
         system_prompt = prompt_builder.system_prompt
@@ -1595,6 +1587,7 @@ def build_agent(
 if __name__ == "__main__":
     from langchain.tools import tool
     from tools.rag import es_search,milvus_search,hybrid_search
+    from tools.advertising import new_user_recommend
     from prompt_builder import PromptBuilderConfig, PromptBuilder
     logging.basicConfig(level=logging.INFO)
     
@@ -1610,7 +1603,7 @@ if __name__ == "__main__":
     
     project_agent = build_agent(
         # tools=[es_search,milvus_search,hybrid_search],
-        tools = [hybrid_search],
+        tools = [hybrid_search,new_user_recommend],
         prompt_builder=bundle,
     )
 
