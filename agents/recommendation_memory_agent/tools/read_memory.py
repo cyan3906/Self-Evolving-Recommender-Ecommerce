@@ -6,7 +6,7 @@ from ..store import JsonMemoryStore
 
 
 def build_memory_tools(store: JsonMemoryStore):
-    """用依赖注入创建 Tool，便于朋友替换 JSON 路径或存储实现。"""
+    """用依赖注入创建 Tool，便于替换 JSON 路径或存储实现。"""
 
     @tool
     def read_short_term_memory(user_id: str) -> dict:
