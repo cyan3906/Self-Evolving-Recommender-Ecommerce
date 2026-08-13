@@ -31,4 +31,4 @@
     rrf_k: 10
     es_weight: 0.7
     milvus_weight: 0.3
-
+    is_execute: true

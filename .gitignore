@@ -7,5 +7,11 @@ db/
 database/
 
 # 环境变量文件
+<<<<<<< HEAD
 .env
-*.idea.txt
+=======
+.env
+
+# Subagent development scratch files
+.superpowers/
+>>>>>>> f12124abfb745f0c0ce91a605ee30c80e4446e2a
