@@ -1014,6 +1014,63 @@ class StateMachineScheduler:
         return layers
 
 
+def is_tool_ok(
+    state_machine: dict[str, Any],
+    tool_name: str,
+) -> bool:
+    """
+    判断工具是否可以执行。
+    """
+    
+    scheduler = StateMachineScheduler(state_machine)
+
+    res = scheduler.resolve(
+        tool_name
+    )
+
+    executable_tool = res.get("executable_tools")[0]
+    
+    if res.get("requested_tool") != executable_tool:
+        return False, f"工具调用顺序错误，请先调用 {executable_tool} 工具。"
+    
+    return True, 1
+
+def update_state_machine(
+    state_machine: dict[str, Any],
+    tool_name: str,
+    retrieval_result: dict[str, Any],
+) -> None:
+    """
+    更新状态机。
+    """
+    
+    scheduler = StateMachineScheduler(state_machine)
+    
+    new_state_machine = deepcopy(
+        state_machine
+    )
+
+    tool_mapping = new_state_machine.get(
+        "tool_mapping",
+        {}
+    )
+
+    tool_meta = tool_mapping.get(
+        tool_name
+    )
+
+    if tool_meta is not None:
+
+        # 0 = 未执行
+        # 1 = 执行中（如果你有这个状态）
+        # 2 = 已完成
+        tool_meta["state"] = 2
+
+        # 保存这个工具产生的结果
+        tool_meta["result"] = retrieval_result
+    
+    return new_state_machine
+
 # ============================================================
 # 测试
 # ============================================================

@@ -15,7 +15,7 @@ LangChain Agent 初始化与调用封装。
 """
 
 from __future__ import annotations
-
+import random
 import logging
 import re
 import sys
@@ -36,6 +36,7 @@ from langchain.agents.middleware import (
     ModelResponse,
     ToolCallRequest,
     dynamic_prompt,
+    hook_config,
 )
 from langchain_core.messages import ToolMessage,AIMessage,HumanMessage
 from langchain_core.tools import BaseTool
@@ -53,11 +54,12 @@ set_debug(True)
 # ---------------------------------------------------------------------------
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
-
+print(PROJECT_ROOT)
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.append(str(PROJECT_ROOT))
 
 from config import Settings  # noqa: E402
+
 
 try:
     from .turn_finalizer import (  # noqa: E402
@@ -750,7 +752,7 @@ class DuplicateToolCallMiddleware(AgentMiddleware):
 
         return response
     
-    
+
 class ConsecutiveDuplicateToolGuardMiddleware(AgentMiddleware):
     """
     防止 Agent 连续执行相同工具的中间件。
@@ -1074,9 +1076,229 @@ class ConsecutiveDuplicateToolGuardMiddleware(AgentMiddleware):
             )
             raise
 
+class StateMachineToolCallReminderMiddleware(AgentMiddleware):
+    """
+    防止模型在 StateMachine 尚未完成时提前结束。
+
+    执行逻辑：
+
+        Model
+          ↓
+        AIMessage
+          ↓
+        是否调用工具？
+          │
+          ├── 是
+          │    └── 正常进入 ToolNode
+          │
+          └── 否
+               ↓
+        检查 state_machine
+               │
+               ├── 所有 Layer state == 2
+               │      └── 允许 Agent 正常结束
+               │
+               └── 仍有 Layer 未完成
+                      ↓
+                随机生成提醒
+                      ↓
+                jump_to="model"
+                      ↓
+                让模型再次决定工具调用
+    """
+
+    REMINDERS = [
+        (
+            "[内部状态机提醒] "
+            "当前任务流程尚未完成。"
+            "未完成的当前层为 {current_layer}，"
+            "当前可执行工具为 {executable_tools}。"
+            "不要输出最终答案，请继续调用合适的工具。"
+        ),
+        (
+            "[内部状态机提醒] "
+            "你刚才没有调用工具，但 StateMachine 仍未执行完成。"
+            "当前应处理 {current_layer}，"
+            "可调用工具：{executable_tools}。"
+            "请继续执行工具调用。"
+        ),
+        (
+            "[内部状态机提醒] "
+            "StateMachine 检测到仍存在未完成任务。"
+            "当前 Layer：{current_layer}；"
+            "当前允许执行：{executable_tools}。"
+            "请根据状态机继续调用工具，不要提前结束任务。"
+        ),
+        (
+            "[内部状态机提醒] "
+            "当前还不能生成最终回答。"
+            "{current_layer} 尚未完成，"
+            "当前可执行工具为 {executable_tools}。"
+            "请选择正确的工具继续执行。"
+        ),
+    ]
+
+    @staticmethod
+    def _check_state_machine(
+        state: AgentState,
+    ) -> dict[str, Any] | None:
+        """
+        核心检查逻辑。
+        """
+
+        # ====================================================
+        # 1. 获取最新模型消息
+        # ====================================================
+
+        messages = state.get(
+            "messages",
+            [],
+        )
+
+        if not messages:
+            return None
+
+        last_message = messages[-1]
+
+        # 只检查模型的 AIMessage
+        if not isinstance(
+            last_message,
+            AIMessage,
+        ):
+            return None
+
+        # ====================================================
+        # 2. 模型已经调用工具
+        #
+        # 正常执行，不干预
+        # ====================================================
+
+        tool_calls = (
+            last_message.tool_calls or []
+        )
+
+        if tool_calls:
+            return None
+
+        # ====================================================
+        # 3. 模型没有调用工具
+        #
+        # 开始检查 StateMachine
+        # ====================================================
+
+        state_machine = state.get(
+            "state_machine"
+        )
+
+        if not isinstance(
+            state_machine,
+            dict,
+        ):
+            return None
+
+        if not state_machine:
+            return None
+        from server.is_execute_tool import StateMachineScheduler
+        scheduler = StateMachineScheduler(
+            state_machine
+        )
+
+        # ====================================================
+        # 4. 所有 Layer 已经完成
+        #
+        # 那模型这次不调用工具是正常的，
+        # 允许 Agent 结束。
+        # ====================================================
+
+        if scheduler.is_all_completed():
+
+            logger.debug(
+                "Model returned no tool calls, "
+                "but StateMachine is already completed."
+            )
+
+            return None
+
+        # ====================================================
+        # 5. StateMachine 还没有完成
+        #
+        # 找当前应该执行哪个 Layer
+        # ====================================================
+
+        current_layer = (
+            scheduler.get_current_layer()
+        )
+
+        executable_tools: list[str] = []
+
+        if current_layer is not None:
+            executable_tools = (
+                scheduler.get_executable_tools(
+                    current_layer
+                )
+            )
+
+        # ====================================================
+        # 6. 随机生成一条提醒
+        # ====================================================
+
+        reminder_template = random.choice(
+            StateMachineToolCallReminderMiddleware.REMINDERS
+        )
+
+        reminder = reminder_template.format(
+            current_layer=(
+                current_layer
+                or "unknown"
+            ),
+            executable_tools=(
+                executable_tools
+                or "暂无明确可执行工具，请重新检查状态机"
+            ),
+        )
+
+        logger.warning(
+            "Model attempted to finish before "
+            "StateMachine completed: "
+            "current_layer=%s, executable_tools=%s",
+            current_layer,
+            executable_tools,
+        )
+
+        # ====================================================
+        # 7. 给模型加入内部提醒
+        #
+        # 然后跳回 model
+        # ====================================================
+
+        return {
+            "messages": [
+                HumanMessage(
+                    content=reminder
+                )
+            ],
+            "jump_to": "model",
+        }
+
+    @hook_config(
+        can_jump_to=["model"]
+    )
+    def after_model(
+        self,
+        state: AgentState,
+        runtime: Any,
+    ) -> dict[str, Any] | None:
+        """
+        每次模型返回之后执行。
+        """
+
+        return self._check_state_machine(
+            state
+        )
+
 
 # 这里需要从规划skill智能体中导入 LayerAgentState
-from agents.evolution_agent.subagents.plan_skill import return_sequential_skill_plan
+from agents.evolution_agent.subagents.plan_skill import return_sequential_skill_plan, return_parallel_skill_plan
 
 class LayerAgentState:
     state_machine: Dict[str, Any] 
@@ -1289,6 +1511,10 @@ class LangChainAgent:
         )
         
         middleware.append(
+            StateMachineToolCallReminderMiddleware()
+        )
+
+        middleware.append(
             ConsecutiveDuplicateToolGuardMiddleware( # 解决多次调用工具会出现的连续调用相同工具的问题
                 compare_args=False,
             )
@@ -1418,7 +1644,7 @@ class LangChainAgent:
                             "content": normalized_input,
                         }
                     ],
-                    "state_machine": return_sequential_skill_plan(),
+                    "state_machine": return_parallel_skill_plan(),
                 },
                 config=self._build_config(
                     normalized_thread_id
@@ -1585,9 +1811,13 @@ def build_agent(
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
+    
     from langchain.tools import tool
     from tools.rag import es_search,milvus_search,hybrid_search
     from tools.advertising import new_user_recommend
+    from tools.memory import short_term_memory
+    from tools.hot import get_top_hot_products
+    
     from prompt_builder import PromptBuilderConfig, PromptBuilder
     logging.basicConfig(level=logging.INFO)
     
@@ -1603,7 +1833,7 @@ if __name__ == "__main__":
     
     project_agent = build_agent(
         # tools=[es_search,milvus_search,hybrid_search],
-        tools = [hybrid_search,new_user_recommend],
+        tools = [hybrid_search,new_user_recommend,get_top_hot_products,short_term_memory],
         prompt_builder=bundle,
     )
 
@@ -1625,6 +1855,8 @@ if __name__ == "__main__":
     print("第一轮工具调用次数：", first.completed_tool_calls)
     print("第一轮 Token：", first.usage.to_dict())
 
+    json.dump(first.to_dict(), open("answer1.json", "w", encoding="utf-8"), ensure_ascii=False, indent=2)
+    
     # 使用相同 thread_id，LangGraph 会读取上一轮历史消息。
     # second = project_agent.invoke(
     #     "刚才那个商品多少钱？",
@@ -1637,5 +1869,5 @@ if __name__ == "__main__":
     # print("第二轮回答：", second.content)
     # print("第二轮结果：", second.to_dict())
 
-    # json.dump(second.to_dict(), open("answer.json", "w"), ensure_ascii=False, indent=2)
+    # json.dump(second.to_dict(), open("answer2.json", "w", encoding="utf-8"), ensure_ascii=False, indent=2)
 
